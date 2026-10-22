@@ -1,5 +1,6 @@
 """Basic offline API tests using the mock device; no hardware required."""
 import unittest
+import backend_test_env  # noqa: F401  (isolates data/config; must precede backend.app)
 from backend.app import app
 
 

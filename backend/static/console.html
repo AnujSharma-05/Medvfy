@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MedVerify Console</title>
+<style>
+:root{
+  --bg:#0f1626;--panel:#172238;--panel2:#1d2a44;--line:#2c3c5c;--text:#e8edf8;--muted:#a3b0c9;
+  --ok:#4fd18b;--warn:#f2b84b;--bad:#f06a6a;--info:#6cb4ff;--accent:#7aa7ff;
+  color-scheme:dark;font-family:system-ui,"Segoe UI",sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+main{max-width:1100px;margin:0 auto;padding:20px 16px 40px}
+header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
+h1{margin:0;font-size:26px}
+h2{margin:0 0 12px;font-size:17px}
+.muted{color:var(--muted)}
+.small{font-size:13px}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:6px 12px;font-size:13px;white-space:nowrap}
+.chip b{font-weight:600}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:middle;background:var(--muted)}
+.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}
+.grid{display:grid;gap:16px;grid-template-columns:repeat(12,1fr)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;min-width:0}
+.span12{grid-column:span 12}.span7{grid-column:span 7}.span5{grid-column:span 5}.span6{grid-column:span 6}
+@media(max-width:860px){.span7,.span5,.span6{grid-column:span 12}}
+.now{border-width:2px}
+.now.active{border-color:var(--warn);background:#2a2618}
+.dose{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
+.dose:last-child{border-bottom:0}
+.big{font-size:22px;font-weight:700}
+.boxes{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+@media(max-width:520px){.boxes{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.box{border:1px solid var(--line);border-radius:12px;padding:12px;background:var(--panel2)}
+.box .id{font-size:24px;font-weight:700}
+.box.loaded{border-color:var(--ok)}.box.removed{border-color:var(--bad)}.box.changed{border-color:var(--warn)}
+.box.target{outline:3px solid var(--warn);outline-offset:2px}
+.state{font-size:12px;margin-top:4px;word-break:break-word}
+button,select,input{font:inherit}
+button{background:#28446c;color:#fff;border:0;border-radius:9px;padding:9px 14px;cursor:pointer}
+button:hover{filter:brightness(1.15)}
+button.secondary{background:#2a3550}
+button.danger{background:#7a3442}
+button.link{background:none;color:var(--accent);padding:4px 6px}
+input,select{background:#0f1830;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:0}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:500;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.tablewrap{overflow-x:auto}
+.tag{display:inline-block;border-radius:6px;padding:2px 7px;font-size:12px;margin:1px 2px 1px 0;background:#2a3550}
+.tag.REMOVED{background:#1f4d36}.tag.MISSED{background:#5a2730}.tag.PARTIAL{background:#5a4620}
+.tag.CANCELLED,.tag.SKIPPED{background:#333d52}.tag.flag{background:#4a3a1c}
+.feed{max-height:420px;overflow:auto}
+.note{padding:10px 0;border-bottom:1px solid var(--line)}
+.note .t{font-weight:600}
+.note.warning .t{color:var(--warn)}.note.critical .t{color:var(--bad)}.note.info .t{color:var(--info)}
+.err{color:var(--bad);min-height:1.2em}
+footer{margin-top:22px;font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>MedVerify</h1>
+      <div class="muted small">Medication box monitor · local console</div>
+    </div>
+    <div class="chips" id="chips"></div>
+  </header>
+
+  <div class="grid">
+    <section class="card span12 now" id="nowCard">
+      <h2>Right now</h2>
+      <div id="now">Loading…</div>
+    </section>
+
+    <section class="card span7">
+      <h2>Compartments <span class="muted small">(what the camera currently sees)</span></h2>
+      <div class="boxes" id="boxes"></div>
+    </section>
+
+    <section class="card span5">
+      <h2>Test controls</h2>
+      <div class="row" style="margin-bottom:10px">
+        <select id="testSlot" aria-label="Compartment"></select>
+        <button id="remindNow">Start a dose now</button>
+        <button id="stop" class="danger">Stop alert</button>
+      </div>
+      <div class="row">
+        <button id="testNotify" class="secondary">Send test notification</button>
+        <button id="enablePopups" class="secondary">Enable pop-ups</button>
+      </div>
+      <div class="err small" id="ctrlMsg"></div>
+    </section>
+
+    <section class="card span6">
+      <h2>Daily schedule</h2>
+      <form id="addForm" class="row" style="margin-bottom:12px">
+        <input type="time" id="newTime" required aria-label="Time">
+        <select id="newSlot" aria-label="Compartment"></select>
+        <input type="text" id="newLabel" placeholder="Label (e.g. Morning)" maxlength="60" style="flex:1 1 140px" aria-label="Label">
+        <button type="submit">Add</button>
+      </form>
+      <div class="err small" id="schedMsg"></div>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Time</th><th>Box</th><th>Label</th><th>On</th><th></th></tr></thead>
+        <tbody id="schedule"></tbody>
+      </table></div>
+      <div class="muted small" id="upcoming" style="margin-top:10px"></div>
+    </section>
+
+    <section class="card span6">
+      <h2>Notifications</h2>
+      <div class="feed" id="feed"><span class="muted">None yet.</span></div>
+    </section>
+
+    <section class="card span12">
+      <h2>Dose history</h2>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Due / started</th><th>Box</th><th>Label</th><th>Outcome</th><th>Flags</th><th>Reminders</th></tr></thead>
+        <tbody id="history"></tbody>
+      </table></div>
+    </section>
+  </div>
+
+  <footer>
+    "Removed" means the camera saw the compartment emptied. The camera cannot see medicine being swallowed.
+  </footer>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const hhmm = (iso) => iso ? iso.slice(11, 16) : "";
+const CATEGORY = {EXPECTED_PRESENT:"loaded", OBJECT_RETURNED:"loaded", REMOVAL_DETECTED:"removed", EMPTY:"removed", PARTIAL_OR_WRONG:"changed"};
+const FRIENDLY = {EXPECTED_PRESENT:"Loaded", OBJECT_RETURNED:"Loaded (refilled/returned)", REMOVAL_DETECTED:"Emptied", EMPTY:"Empty",
+  PARTIAL_OR_WRONG:"Changed — not empty", UNKNOWN:"Unknown", UNCERTAIN:"Unclear view", REMOVAL_CANDIDATE:"Checking: removal?", RETURN_CANDIDATE:"Checking: refill?"};
+let compartments = [];
+let seenNotes = null;
+let popups = false;
+try { popups = localStorage.getItem("mv-popups") === "1" && "Notification" in window && Notification.permission === "granted"; } catch (e) {}
+
+async function api(path, method = "GET", body) {
+  const opts = {method, headers: {"Content-Type": "application/json"}};
+  if (body !== undefined) opts.body = JSON.stringify(body);
+  const r = await fetch(path, opts);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.ok === false) throw new Error(j.error || r.statusText);
+  return j;
+}
+
+function fillSelects(list) {
+  if (compartments.join() === list.join()) return;
+  compartments = list;
+  for (const id of ["testSlot", "newSlot"]) {
+    $(id).innerHTML = list.map((c) => `<option value="${esc(c)}">Compartment ${esc(c)}</option>`).join("");
+  }
+}
+
+function renderChips(s) {
+  const cam = s.doses.camera;
+  const camCls = cam.online ? (cam.monitoring ? "ok" : "warn") : "bad";
+  const camTxt = !cam.online ? "Camera offline"
+    : cam.trial ? "Camera in trial mode (doses not checked)"
+    : cam.monitoring ? "Camera monitoring" : "Camera on, not monitoring (press M)";
+  const dev = s.device || {};
+  const devCls = dev.last_error ? "bad" : (dev.mode === "mock" ? "warn" : "ok");
+  const push = (s.notification_channels || []).filter((c) => c !== "in_app");
+  $("chips").innerHTML =
+    `<span class="chip"><span class="dot ${camCls}"></span>${esc(camTxt)}</span>` +
+    `<span class="chip"><span class="dot ${devCls}"></span>Box: <b>${esc(dev.mode || "?")}</b>${dev.last_error ? " (error)" : ""}</span>` +
+    `<span class="chip"><span class="dot ${push.length ? "ok" : "warn"}"></span>Phone push: <b>${push.length ? esc(push.join(", ")) : "off"}</b></span>`;
+}
+
+function renderNow(s) {
+  const active = s.doses.active_sessions;
+  $("nowCard").classList.toggle("active", active.length > 0);
+  if (!active.length) {
+    const next = s.doses.upcoming[0];
+    $("now").innerHTML = next
+      ? `No dose open. Next: <b>${esc(next.at.replace("T", " "))}</b> — compartment <b>${esc(next.compartment_id)}</b> ${esc(next.label)}`
+      : `No dose open and nothing scheduled. Add a time below.`;
+    return;
+  }
+  const now = new Date(s.doses.now);
+  $("now").innerHTML = active.map((d) => {
+    const left = Math.max(0, Math.round((new Date(d.deadline) - now) / 60000));
+    const flags = d.flags.map((f) => `<span class="tag flag">${esc(f)}</span>`).join("");
+    return `<div class="dose"><div><div class="big">Take from compartment ${esc(d.compartment_id)}</div>
+      <div class="muted small">${esc(d.label)} · started ${esc(hhmm(d.started_at))} · ${left} min left · reminder ${d.reminders_sent}</div>
+      <div>${flags}</div></div></div>`;
+  }).join("");
+}
+
+function renderBoxes(s) {
+  const targets = new Set(s.doses.active_sessions.map((d) => d.compartment_id));
+  $("boxes").innerHTML = compartments.map((c) => {
+    const e = s.doses.compartments[c] || {};
+    const cat = CATEGORY[e.state] || "";
+    const pending = e.pending ? `<div class="state muted">${esc(FRIENDLY[e.pending] || e.pending)}</div>` : "";
+    return `<div class="box ${cat} ${targets.has(c) ? "target" : ""}"><div class="id">${esc(c)}</div>
+      <div class="state">${esc(FRIENDLY[e.state] || e.state || "Unknown")}</div>${pending}
+      <div class="state muted">${e.updated_at ? "since " + esc(hhmm(e.updated_at)) : ""}</div></div>`;
+  }).join("");
+}
+
+async function loadSchedule() {
+  const j = await api("/api/schedule");
+  $("schedMsg").textContent = j.load_error || "";
+  $("schedule").innerHTML = j.doses.length ? j.doses.map((d) => `<tr>
+      <td><b>${esc(d.time)}</b></td><td>${esc(d.compartment_id)}</td><td>${esc(d.label)}</td>
+      <td><input type="checkbox" data-toggle="${esc(d.id)}" ${d.enabled ? "checked" : ""} aria-label="Enabled"></td>
+      <td><button class="link" data-del="${esc(d.id)}">Delete</button></td></tr>`).join("")
+    : `<tr><td colspan="5" class="muted">No dose times yet.</td></tr>`;
+}
+
+function renderUpcoming(s) {
+  const up = s.doses.upcoming;
+  $("upcoming").textContent = up.length ? "Next: " + up.map((u) => `${u.at.slice(5).replace("T", " ")} ${u.compartment_id}`).join(" · ") : "";
+}
+
+function renderFeed(s) {
+  const notes = (s.notifications || []).slice().reverse();
+  $("feed").innerHTML = notes.length ? notes.map((n) => `<div class="note ${esc(n.level)}">
+      <div class="t">${esc(n.title)}</div><div>${esc(n.message)}</div>
+      <div class="muted small">${esc(new Date(n.timestamp).toLocaleString())} · ${esc(Object.entries(n.deliveries).map(([k, v]) => k + ": " + v).join(", "))}</div>
+    </div>`).join("") : `<span class="muted">None yet.</span>`;
+
+  const ids = new Set(notes.map((n) => n.id));
+  if (seenNotes !== null && popups) {
+    for (const n of notes.slice().reverse()) {
+      if (!seenNotes.has(n.id)) {
+        try { new Notification(n.title, {body: n.message, tag: n.id, requireInteraction: n.level !== "info"}); } catch (e) {}
+      }
+    }
+  }
+  seenNotes = ids;
+}
+
+function renderHistory(s) {
+  const rows = s.doses.recent_sessions.filter((d) => d.status === "CLOSED");
+  $("history").innerHTML = rows.length ? rows.map((d) => `<tr>
+      <td>${esc((d.scheduled_for || d.started_at).replace("T", " ").slice(0, 16))}</td><td>${esc(d.compartment_id)}</td>
+      <td>${esc(d.label)}</td><td><span class="tag ${esc(d.outcome)}">${esc(d.outcome)}</span></td>
+      <td>${d.flags.map((f) => `<span class="tag flag">${esc(f)}</span>`).join("")}</td><td>${d.reminders_sent}</td></tr>`).join("")
+    : `<tr><td colspan="6" class="muted">No finished doses yet.</td></tr>`;
+}
+
+async function refresh() {
+  try {
+    const s = await api("/api/status");
+    fillSelects(Object.keys(s.doses.compartments));
+    renderChips(s); renderNow(s); renderBoxes(s); renderUpcoming(s); renderFeed(s); renderHistory(s);
+  } catch (e) {
+    $("now").textContent = "Cannot reach the MedVerify server: " + e.message;
+  }
+}
+
+function flash(id, text) { $(id).textContent = text; setTimeout(() => { if ($(id).textContent === text) $(id).textContent = ""; }, 5000); }
+
+$("remindNow").addEventListener("click", async () => {
+  try { await api("/api/reminders", "POST", {compartment_id: $("testSlot").value, label: "Test"}); refresh(); }
+  catch (e) { flash("ctrlMsg", e.message); }
+});
+$("stop").addEventListener("click", async () => {
+  try { const r = await api("/api/device/stop", "POST", {}); flash("ctrlMsg", `Stopped (${r.event.cancelled_sessions} dose(s) cancelled).`); refresh(); }
+  catch (e) { flash("ctrlMsg", e.message); }
+});
+$("testNotify").addEventListener("click", async () => {
+  try { const r = await api("/api/notifications/test", "POST", {}); flash("ctrlMsg", "Sent via: " + r.channels.join(", ")); refresh(); }
+  catch (e) { flash("ctrlMsg", e.message); }
+});
+$("enablePopups").addEventListener("click", async () => {
+  if (!("Notification" in window)) return flash("ctrlMsg", "This browser does not support pop-ups.");
+  const p = await Notification.requestPermission();
+  popups = p === "granted";
+  try { localStorage.setItem("mv-popups", popups ? "1" : "0"); } catch (e) {}
+  flash("ctrlMsg", popups ? "Pop-ups enabled while this page is open." : "Pop-ups blocked by the browser.");
+});
+$("addForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  try {
+    await api("/api/schedule", "POST", {time: $("newTime").value, compartment_id: $("newSlot").value, label: $("newLabel").value});
+    $("newLabel").value = ""; await loadSchedule(); refresh();
+  } catch (e) { flash("schedMsg", e.message); }
+});
+$("schedule").addEventListener("click", async (ev) => {
+  const id = ev.target.dataset.del;
+  if (!id) return;
+  try { await api("/api/schedule/" + encodeURIComponent(id), "DELETE"); await loadSchedule(); refresh(); }
+  catch (e) { flash("schedMsg", e.message); }
+});
+$("schedule").addEventListener("change", async (ev) => {
+  const id = ev.target.dataset.toggle;
+  if (!id) return;
+  try { await api("/api/schedule/" + encodeURIComponent(id), "PUT", {enabled: ev.target.checked}); await loadSchedule(); refresh(); }
+  catch (e) { flash("schedMsg", e.message); }
+});
+$("enablePopups").textContent = popups ? "Pop-ups on" : "Enable pop-ups";
+
+refresh().then(loadSchedule);
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

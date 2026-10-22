@@ -4,3 +4,5 @@ __pycache__/
 config/rois.json
 data/*
 !.gitkeep
+config/schedule.json
+config/auth.json

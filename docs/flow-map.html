@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<style>:root{color-scheme:light dark}body{margin:0}</style>
+<title>MedVerify Flow Map</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column; diagrams break out wider and scroll sideways on phones. */
+:root{
+  --bg:#F4F6F2; --fg:#1B221E; --muted:#5B6862; --panel:#FFFFFF; --line:#CBD3CB;
+  --accent:#2C6686; --new:#6A4DB6; --ok:#2E7D4F; --warn:#A86A0C; --bad:#B23A3A;
+  --display:"Archivo","Segoe UI",system-ui,sans-serif;
+  --sans:"IBM Plex Sans","Segoe UI",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#111614; --fg:#E4EAE6; --muted:#9AA7A0; --panel:#19201C; --line:#34413A;
+  --accent:#74AECF; --new:#AE97F2; --ok:#5CC48A; --warn:#E3A945; --bad:#EE7B7B; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#111614; --fg:#E4EAE6; --muted:#9AA7A0; --panel:#19201C; --line:#34413A;
+  --accent:#74AECF; --new:#AE97F2; --ok:#5CC48A; --warn:#E3A945; --bad:#EE7B7B; color-scheme:dark}
+
+body{background:var(--bg);color:var(--fg);font:16px/1.6 var(--sans)}
+.wrap{max-width:1180px;margin:0 auto;padding-block:40px 64px;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.col{max-width:760px}
+h1,h2,h3{font-family:var(--display);line-height:1.15;text-wrap:balance;margin:0}
+h1{font-size:clamp(30px,5vw,44px);font-weight:800;letter-spacing:-.01em}
+h2{font-size:24px;font-weight:700;margin-top:56px}
+h3{font-size:17px;font-weight:700;margin-top:28px}
+p{margin:12px 0}
+.eyebrow{font:500 12px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+.lede{font-size:18px;color:var(--muted);margin-top:14px}
+code,.mono{font-family:var(--mono);font-size:.88em}
+.key{display:flex;flex-wrap:wrap;gap:10px 22px;margin:18px 0 0;font-size:14px;color:var(--muted)}
+.key span{display:inline-flex;align-items:center;gap:8px}
+.sw{width:26px;height:14px;border-radius:3px;border:1.5px solid var(--fg);background:var(--panel)}
+.sw.new{border:1.5px dashed var(--new)}
+figure{margin:20px 0 0}
+.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:12px}
+figcaption{font-size:14px;color:var(--muted);margin-top:10px;max-width:760px}
+svg.d{display:block;width:100%;height:auto;color:var(--fg)}
+.d text{fill:var(--fg);font:12px var(--sans)}
+.d .t{font:600 13px var(--sans)}
+.d .h{font:700 13px var(--display)}
+.d .s{font-size:11px;fill:var(--muted)}
+.d .mono{font:500 11px var(--mono)}
+.d .card{fill:var(--panel);stroke:var(--fg);stroke-width:1.2}
+.d .card.new{stroke:var(--new);stroke-dasharray:5 4}
+.d .card.soft{stroke:var(--line)}
+.d .zone{fill:none;stroke:var(--muted);stroke-width:1;stroke-dasharray:2 4}
+.d .lane{stroke:var(--line);stroke-width:1}
+.d .edge{fill:none;stroke:var(--fg);stroke-width:1.3}
+.d .edge.new{stroke:var(--new);stroke-dasharray:5 4}
+.d .ah{fill:var(--fg)}
+.d .ahn{fill:var(--new)}
+.d .ok{stroke:var(--ok);stroke-width:2}
+.d .warn{stroke:var(--warn);stroke-width:2}
+.d .bad{stroke:var(--bad);stroke-width:2}
+.d .newtxt{fill:var(--new)}
+table{width:100%;border-collapse:collapse;font-size:15px}
+th,td{text-align:left;vertical-align:top;padding:10px 10px 10px 0;border-bottom:1px solid var(--line)}
+th{font:500 12px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+td:first-child{font-weight:600;white-space:nowrap}
+.tw{overflow-x:auto}
+.yes{color:var(--warn);font-weight:600}.no{color:var(--ok);font-weight:600}
+ol.decide{padding-left:0;list-style:none;counter-reset:d;display:grid;gap:14px;margin-top:18px}
+ol.decide>li{counter-increment:d;display:grid;grid-template-columns:40px 1fr;gap:4px 12px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+ol.decide>li::before{content:counter(d);grid-row:span 3;font:800 22px/1 var(--display);color:var(--accent)}
+ol.decide b{font-family:var(--display);font-size:16px}
+.rec{font-size:14px;color:var(--muted)}
+.rec strong{color:var(--fg)}
+.phases{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-top:18px}
+.phase{border-top:3px solid var(--accent);padding-top:10px}
+.phase ul{margin:8px 0 0;padding-left:18px;font-size:15px}
+.phase .when{font:500 12px var(--mono);color:var(--muted)}
+.note{border-left:3px solid var(--warn);padding:2px 0 2px 14px;margin:16px 0}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="col">
+    <div class="eyebrow">Draft for review · 23 Oct 2026</div>
+    <h1>MedVerify flow map</h1>
+    <p class="lede">How a dose travels from the son's phone to the father's pill box and back, what the software does at each step, and the decisions needed before building the caretaker and patient apps.</p>
+    <div class="key">
+      <span><i class="sw"></i>Exists and tested today</span>
+      <span><i class="sw new"></i>Proposed, needs building</span>
+    </div>
+  </div>
+
+  <!-- ============================================================ question -->
+  <div class="col">
+    <h2>Does yesterday affect today's result?</h2>
+    <p>The <strong>detection score does not carry over</strong>. Each frame is compared only with the calibration photos you saved with <code>E</code> (empty) and <code>S</code> (loaded). Nothing learns from earlier frames or days. What does carry over is the compartment's <strong>last state</strong>, on purpose, so a restart doesn't announce the same removal again.</p>
+    <div class="tw"><table>
+      <thead><tr><th>Thing</th><th>Carries over?</th><th>What that means for testing</th></tr></thead>
+      <tbody>
+        <tr><td>Detection score</td><td class="no">No</td><td>Always "this frame vs. your calibration photos". A new object layout only needs a new <code>E</code> + <code>S</code>.</td></tr>
+        <tr><td>Thresholds</td><td class="no">No</td><td>Fixed numbers in <code>settings.json</code>. They change only when we tune them from your test data.</td></tr>
+        <tr><td>Compartment state</td><td class="yes">Yes</td><td>Saved in <code>vision_state.json</code>. If A ended a test "emptied", the next run starts from "emptied". Pressing <code>S</code> resets every compartment to "loaded".</td></tr>
+        <tr><td>Dose history</td><td class="yes">Yes</td><td>Kept for the son's reports. It never feeds into detection.</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">With many object permutations, the state carry-over is the part that would make testing messy. The proposal below adds a <strong>trial mode</strong>: every trial starts from a clean state, is labelled with what you actually did, and never sends alerts to the son.</p>
+  </div>
+
+  <!-- ============================================================ architecture -->
+  <h2>1 · What runs where</h2>
+  <div class="col"><p>Everything runs on the laptop at home. The son reaches it through a public link that the laptop opens outwards (a tunnel), so the home router needs no setup. The camera only ever talks to the server on the laptop itself.</p></div>
+  <figure>
+    <div class="scroll">
+    <svg class="d" viewBox="0 0 1000 560" role="img" aria-label="Architecture: camera process and server on the laptop; server drives the ESP32 box over USB and the patient screen; a tunnel exposes caretaker pages to the son's phone; alerts go via ntfy push.">
+      <defs>
+        <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="a1n" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ahn" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <!-- zones -->
+      <rect class="zone" x="10" y="24" width="690" height="526" rx="10"/>
+      <text class="h" x="24" y="46">Home (father)</text>
+      <rect class="zone" x="26" y="58" width="658" height="334" rx="8"/>
+      <text class="s" x="40" y="78">Laptop · must stay on and awake</text>
+      <rect class="zone" x="716" y="24" width="274" height="526" rx="10"/>
+      <text class="h" x="730" y="46">Internet</text>
+
+      <!-- camera process -->
+      <rect class="card" x="42" y="92" width="270" height="128" rx="8"/>
+      <text class="t" x="58" y="116">Camera process</text>
+      <text x="58" y="138">webcam → stillness check</text>
+      <text x="58" y="157">compare with calibration</text>
+      <text x="58" y="176">state machine (confirm ≥ 2 s)</text>
+      <text class="s" x="58" y="200">vision/camera_inspector.py</text>
+
+      <!-- patient screen -->
+      <rect class="card new" x="42" y="250" width="270" height="72" rx="8"/>
+      <text class="t" x="58" y="274">Patient screen</text>
+      <text x="58" y="295">full screen, big text, one button</text>
+
+      <!-- server -->
+      <rect class="card" x="380" y="92" width="290" height="286" rx="8"/>
+      <text class="t" x="396" y="116">Server</text>
+      <text class="s" x="452" y="116">backend/app.py</text>
+      <rect class="card soft" x="394" y="128" width="262" height="32" rx="5"/><text x="406" y="149">Schedule + dose sessions</text>
+      <rect class="card soft" x="394" y="166" width="262" height="32" rx="5"/><text x="406" y="187">Notifier: feed + phone push</text>
+      <rect class="card soft" x="394" y="204" width="262" height="32" rx="5"/><text x="406" y="225">Box driver: USB serial</text>
+      <rect class="card new" x="394" y="242" width="262" height="32" rx="5"/><text x="406" y="263">Login + roles (son / father)</text>
+      <rect class="card new" x="394" y="280" width="262" height="32" rx="5"/><text x="406" y="301">Commands to camera</text>
+      <rect class="card new" x="394" y="318" width="262" height="32" rx="5"/><text x="406" y="339">Trial recorder + evaluator</text>
+
+      <!-- box + father -->
+      <rect class="card" x="380" y="416" width="290" height="64" rx="8"/>
+      <text class="t" x="396" y="441">ESP32 pill box</text>
+      <text x="396" y="462">LED per compartment + buzzer</text>
+      <rect class="card soft" x="42" y="416" width="270" height="64" rx="8"/>
+      <text class="t" x="58" y="441">Father</text>
+      <text x="58" y="462">sees light + screen, takes pill</text>
+
+      <!-- edges inside home -->
+      <line class="edge" x1="312" y1="140" x2="378" y2="140" marker-end="url(#a1)"/>
+      <text class="s" x="345" y="132" text-anchor="middle">changes</text>
+      <text class="s" x="345" y="156" text-anchor="middle">+ pulse 5 s</text>
+      <line class="edge new" x1="380" y1="294" x2="314" y2="208" marker-end="url(#a1n)"/>
+      <text class="s newtxt" x="356" y="238" text-anchor="middle">recalibrate,</text>
+      <text class="s newtxt" x="356" y="251" text-anchor="middle">start trial</text>
+      <line class="edge new" x1="394" y1="320" x2="314" y2="300" marker-end="url(#a1n)"/>
+      <text class="s newtxt" x="352" y="330" text-anchor="middle">"Take A"</text>
+      <line class="edge" x1="525" y1="378" x2="525" y2="414" marker-end="url(#a1)"/>
+      <text class="s" x="533" y="401">USB: "A", "STOP"</text>
+      <line class="edge" x1="380" y1="448" x2="314" y2="448" marker-end="url(#a1)"/>
+      <text class="s" x="347" y="440" text-anchor="middle">light, beep</text>
+      <line class="edge new" x1="177" y1="322" x2="177" y2="414" marker-end="url(#a1n)"/>
+      <text class="s newtxt" x="185" y="372">reads</text>
+      <text class="s" x="58" y="512">The camera only sees the father's hand empty a compartment.</text>
+      <text class="s" x="58" y="528">It never sees swallowing.</text>
+
+      <!-- internet side -->
+      <rect class="card new" x="750" y="104" width="220" height="86" rx="8"/>
+      <text class="t" x="766" y="128">Tunnel</text>
+      <text x="766" y="149">public https:// link</text>
+      <text class="s" x="766" y="170">cloudflared or ngrok</text>
+      <rect class="card new" x="750" y="270" width="220" height="96" rx="8"/>
+      <text class="t" x="766" y="294">Son's phone</text>
+      <text x="766" y="315">caretaker app (the link)</text>
+      <text x="766" y="335">ntfy app for alerts</text>
+      <rect class="card" x="750" y="430" width="220" height="60" rx="8"/>
+      <text class="t" x="766" y="454">ntfy.sh</text>
+      <text class="s" x="766" y="474">push relay (exists, off by default)</text>
+
+      <line class="edge new" x1="670" y1="150" x2="748" y2="150" marker-end="url(#a1n)" marker-start="url(#a1n)"/>
+      <text class="s newtxt" x="709" y="142" text-anchor="middle">HTTPS</text>
+      <line class="edge new" x1="860" y1="190" x2="860" y2="268" marker-end="url(#a1n)" marker-start="url(#a1n)"/>
+      <text class="s newtxt" x="868" y="228">login, status,</text>
+      <text class="s newtxt" x="868" y="241">schedule, actions</text>
+      <polyline class="edge" points="670,186 726,186 726,460 748,460" marker-end="url(#a1)"/>
+      <text class="s" x="734" y="404">alerts</text>
+      <line class="edge" x1="860" y1="430" x2="860" y2="368" marker-end="url(#a1)"/>
+      <text class="s" x="868" y="404">push</text>
+    </svg>
+    </div>
+    <figcaption>The camera-to-server arrows stay inside the laptop. Only the son's pages go through the tunnel, so nobody on the internet can post fake "compartment emptied" events. Alerts travel separately through ntfy, so they still reach the son if the shareable link changes.</figcaption>
+  </figure>
+
+  <!-- ============================================================ swimlane -->
+  <h2>2 · A day, from each person's side</h2>
+  <div class="col"><p>Read each column top to bottom (or bottom to top, where the father acts first). The first three columns are the normal path. The next two are what goes wrong, and the last is the weekly refill.</p></div>
+  <figure>
+    <div class="scroll">
+    <svg class="d" viewBox="0 0 1150 455" role="img" aria-label="Swimlane of the son, server, home devices and father across setup, dose time, taking the pill, wrong compartment, no action, and weekly refill.">
+      <defs>
+        <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="a2n" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ahn" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <!-- lanes -->
+      <line class="lane" x1="0" y1="40" x2="1150" y2="40"/><line class="lane" x1="0" y1="135" x2="1150" y2="135"/>
+      <line class="lane" x1="0" y1="230" x2="1150" y2="230"/><line class="lane" x1="0" y1="325" x2="1150" y2="325"/>
+      <line class="lane" x1="0" y1="420" x2="1150" y2="420"/>
+      <text class="h" x="8" y="82">Son</text><text class="s" x="8" y="100">remote, phone</text>
+      <text class="h" x="8" y="177">Server</text><text class="s" x="8" y="195">laptop</text>
+      <text class="h" x="8" y="272">Home devices</text><text class="s" x="8" y="290">box, camera,</text><text class="s" x="8" y="304">screen</text>
+      <text class="h" x="8" y="367">Father</text><text class="s" x="8" y="385">at the box</text>
+      <!-- phase headers -->
+      <text class="t" x="140" y="26">Setup</text>
+      <text class="t" x="310" y="26">08:00 dose due</text>
+      <text class="t" x="480" y="26">Takes it</text>
+      <text class="t" x="650" y="26">Wrong compartment</text>
+      <text class="t" x="820" y="26">No action</text>
+      <text class="t" x="990" y="26">Weekly refill</text>
+      <line class="lane" x1="636" y1="8" x2="636" y2="420"/><line class="lane" x1="976" y1="8" x2="976" y2="420"/>
+
+      <!-- col 1 setup -->
+      <rect class="card new" x="140" y="52" width="150" height="70" rx="7"/><text x="150" y="74">Sets dose times</text><text class="s" x="150" y="91">08:00 A · 20:00 B</text>
+      <rect class="card" x="140" y="147" width="150" height="70" rx="7"/><text x="150" y="169">Saves schedule</text>
+      <rect class="card" x="140" y="242" width="150" height="70" rx="7"/><text x="150" y="264">Calibrate camera</text><text class="s" x="150" y="281">empty → E</text><text class="s" x="150" y="297">loaded → S</text>
+      <rect class="card soft" x="140" y="337" width="150" height="70" rx="7"/><text x="150" y="359">Box sits under</text><text x="150" y="376">the camera</text>
+      <line class="edge new" x1="215" y1="122" x2="215" y2="145" marker-end="url(#a2n)"/>
+
+      <!-- col 2 due -->
+      <rect class="card new" x="310" y="52" width="150" height="70" rx="7"/><text x="320" y="74">App: A due now</text>
+      <rect class="card" x="310" y="147" width="150" height="70" rx="7"/><text x="320" y="169">Opens dose A</text><text class="s" x="320" y="186">30-minute window</text>
+      <rect class="card new" x="310" y="242" width="150" height="70" rx="7"/><text x="320" y="264">LED A on + beep</text><text class="s newtxt" x="320" y="281">Screen: Take from A</text>
+      <rect class="card soft" x="310" y="337" width="150" height="70" rx="7"/><text x="320" y="359">Sees light</text><text x="320" y="376">and screen</text>
+      <line class="edge new" x1="385" y1="147" x2="385" y2="124" marker-end="url(#a2n)"/>
+      <line class="edge" x1="385" y1="217" x2="385" y2="240" marker-end="url(#a2)"/>
+      <line class="edge" x1="385" y1="312" x2="385" y2="335" marker-end="url(#a2)"/>
+
+      <!-- col 3 taken -->
+      <rect class="card new" x="480" y="52" width="150" height="70" rx="7"/><text x="490" y="74">Alert: A removed</text><text class="s" x="490" y="91">at 08:03</text>
+      <rect class="card" x="480" y="147" width="150" height="70" rx="7"/><text x="490" y="169">Dose REMOVED</text><text class="s" x="490" y="186">LED off</text>
+      <rect class="card" x="480" y="242" width="150" height="70" rx="7"/><text x="490" y="264">Camera: A emptied</text><text class="s" x="490" y="281">still ≥ 2 s, confirmed</text>
+      <rect class="card soft" x="480" y="337" width="150" height="70" rx="7"/><text x="490" y="359">Takes pill from A</text>
+      <line class="edge" x1="555" y1="337" x2="555" y2="314" marker-end="url(#a2)"/>
+      <line class="edge" x1="555" y1="242" x2="555" y2="219" marker-end="url(#a2)"/>
+      <line class="edge" x1="555" y1="147" x2="555" y2="124" marker-end="url(#a2)"/>
+
+      <!-- col 4 wrong -->
+      <rect class="card new" x="650" y="52" width="150" height="70" rx="7"/><text x="660" y="74">Alert: wrong</text><text x="660" y="91">compartment C</text>
+      <rect class="card" x="650" y="147" width="150" height="70" rx="7"/><text x="660" y="169">Warns, A stays open</text><text class="s" x="660" y="186">light back on A</text>
+      <rect class="card new" x="650" y="242" width="150" height="70" rx="7"/><text x="660" y="264">Camera: C emptied</text><text class="s newtxt" x="660" y="281">Screen: use A, not C</text>
+      <rect class="card soft" x="650" y="337" width="150" height="70" rx="7"/><text x="660" y="359">Opens C instead</text>
+      <line class="edge" x1="725" y1="337" x2="725" y2="314" marker-end="url(#a2)"/>
+      <line class="edge" x1="725" y1="242" x2="725" y2="219" marker-end="url(#a2)"/>
+      <line class="edge" x1="725" y1="147" x2="725" y2="124" marker-end="url(#a2)"/>
+
+      <!-- col 5 none -->
+      <rect class="card new" x="820" y="52" width="150" height="70" rx="7"/><text x="830" y="74">Urgent: missed</text><text class="s newtxt" x="830" y="91">can tap "Remind now"</text>
+      <rect class="card" x="820" y="147" width="150" height="70" rx="7"/><text x="830" y="169">Re-beep every 5 min</text><text class="s" x="830" y="186">08:30 → MISSED</text>
+      <rect class="card" x="820" y="242" width="150" height="70" rx="7"/><text x="830" y="264">Beeps again</text>
+      <rect class="card soft" x="820" y="337" width="150" height="70" rx="7"/><text x="830" y="359">Asleep or away</text>
+      <line class="edge" x1="870" y1="147" x2="870" y2="124" marker-end="url(#a2)"/>
+      <line class="edge new" x1="920" y1="122" x2="920" y2="145" marker-end="url(#a2n)"/>
+      <line class="edge" x1="895" y1="217" x2="895" y2="240" marker-end="url(#a2)"/>
+
+      <!-- col 6 refill -->
+      <rect class="card new" x="990" y="52" width="150" height="70" rx="7"/><text x="1000" y="74">Refills the box,</text><text x="1000" y="91">taps "Refilled"</text>
+      <rect class="card new" x="990" y="147" width="150" height="70" rx="7"/><text x="1000" y="169">Tells camera to</text><text x="1000" y="186">recalibrate</text>
+      <rect class="card new" x="990" y="242" width="150" height="70" rx="7"/><text x="1000" y="264">Saves new "loaded"</text><text x="1000" y="281">photos</text>
+      <rect class="card soft" x="990" y="337" width="150" height="70" rx="7"/><text x="1000" y="359">Box ready for</text><text x="1000" y="376">next dose</text>
+      <line class="edge new" x1="1065" y1="122" x2="1065" y2="145" marker-end="url(#a2n)"/>
+      <line class="edge new" x1="1065" y1="217" x2="1065" y2="240" marker-end="url(#a2n)"/>
+      <text class="s" x="140" y="444">Arrows show who causes what. Grey-outlined cards are people acting; nothing in software.</text>
+    </svg>
+    </div>
+    <figcaption>Every son-side card is dashed because the caretaker app doesn't exist yet: today the son would see the same events only through ntfy push. The father's screen is new too. Today he gets only the light and beep.</figcaption>
+  </figure>
+
+  <!-- ============================================================ lifecycle -->
+  <h2>3 · The life of one dose</h2>
+  <div class="col"><p>This is the server's rule book. It acts only on <em>confirmed</em> camera states, so a passing hand or a blurry frame cannot close a dose.</p></div>
+  <figure>
+    <div class="scroll">
+    <svg class="d" viewBox="0 0 1000 270" role="img" aria-label="Dose lifecycle: scheduled becomes open at dose time; open re-beeps every 5 minutes; it ends as removed, partial, missed, cancelled, or skipped; proposed: the father can silence the sound while the dose stays open.">
+      <defs>
+        <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="a3n" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ahn" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect class="card" x="20" y="112" width="120" height="48" rx="24"/><text class="t" x="80" y="141" text-anchor="middle">Scheduled</text>
+      <line class="edge" x1="140" y1="136" x2="228" y2="136" marker-end="url(#a3)"/>
+      <text class="s" x="184" y="128" text-anchor="middle">time reached</text>
+      <rect class="card" x="230" y="112" width="140" height="48" rx="24"/><text class="t" x="300" y="135" text-anchor="middle">Open</text><text class="s" x="300" y="151" text-anchor="middle">LED + beep</text>
+      <path class="edge" d="M272 112 C 272 70, 328 70, 328 110" marker-end="url(#a3)"/>
+      <text class="s" x="300" y="66" text-anchor="middle">every 5 min: beep again</text>
+      <path class="edge new" d="M272 160 C 272 204, 328 204, 328 162" marker-end="url(#a3n)"/>
+      <text class="s newtxt" x="300" y="222" text-anchor="middle">father: "stop sound"</text>
+      <text class="s newtxt" x="300" y="236" text-anchor="middle">(dose stays open)</text>
+
+      <line class="edge" x1="370" y1="136" x2="420" y2="136"/>
+      <line class="edge" x1="420" y1="36" x2="420" y2="236"/>
+      <line class="edge" x1="420" y1="36" x2="578" y2="36" marker-end="url(#a3)"/><text class="s" x="500" y="29" text-anchor="middle">camera: A emptied</text>
+      <line class="edge" x1="420" y1="86" x2="578" y2="86" marker-end="url(#a3)"/><text class="s" x="500" y="79" text-anchor="middle">30 min, only changed</text>
+      <line class="edge" x1="420" y1="136" x2="578" y2="136" marker-end="url(#a3)"/><text class="s" x="500" y="129" text-anchor="middle">30 min, nothing</text>
+      <line class="edge" x1="420" y1="186" x2="578" y2="186" marker-end="url(#a3)"/><text class="s" x="500" y="179" text-anchor="middle">cancelled by a person</text>
+      <line class="edge" x1="420" y1="236" x2="578" y2="236" marker-end="url(#a3)"/><text class="s" x="500" y="229" text-anchor="middle">next dose, same box</text>
+
+      <rect class="card ok" x="580" y="20" width="150" height="32" rx="6"/><text class="mono" x="595" y="41">REMOVED</text>
+      <rect class="card warn" x="580" y="70" width="150" height="32" rx="6"/><text class="mono" x="595" y="91">PARTIAL</text>
+      <rect class="card bad" x="580" y="120" width="150" height="32" rx="6"/><text class="mono" x="595" y="141">MISSED</text>
+      <rect class="card soft" x="580" y="170" width="150" height="32" rx="6"/><text class="mono" x="595" y="191">CANCELLED</text>
+      <rect class="card soft" x="580" y="220" width="150" height="32" rx="6"/><text class="mono" x="595" y="241">SKIPPED</text>
+
+      <rect class="card soft" x="770" y="20" width="210" height="232" rx="8"/>
+      <text class="t" x="786" y="44">Flags on any outcome</text>
+      <text class="mono" x="786" y="70">WRONG_COMPARTMENT:C</text>
+      <text class="mono" x="786" y="94">NOT_LOADED</text>
+      <text class="mono" x="786" y="118">CAMERA_OFFLINE</text>
+      <text class="mono" x="786" y="142">DEVICE_ERROR</text>
+      <text class="mono" x="786" y="166">PUT_BACK</text>
+      <text class="s" x="786" y="198">Each flag also sends an</text>
+      <text class="s" x="786" y="214">alert when it first happens.</text>
+    </svg>
+    </div>
+    <figcaption>Today "Stop alert" cancels the whole dose. If the father gets a stop button, it must only silence the sound and leave the dose open. Otherwise silencing a beep would erase the evidence of a missed dose.</figcaption>
+  </figure>
+
+  <!-- ============================================================ trial loop -->
+  <h2>4 · Teaching the algorithm with your webcam</h2>
+  <div class="col"><p>"Teaching" here means measuring. You perform labelled trials, the recorder saves what the camera measured, and an evaluator replays those measurements under different thresholds. It reports how many removals each setting would miss and how many false alarms it would raise. We pick the setting from that report. Nothing changes on its own while you test.</p></div>
+  <figure>
+    <div class="scroll">
+    <svg class="d" viewBox="0 0 1000 200" role="img" aria-label="Trial loop: arrange objects, calibrate, start a labelled trial, act, the recorder saves frames and scores, the evaluator replays thresholds; repeat for the next permutation.">
+      <defs>
+        <marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect class="card soft" x="10" y="36" width="140" height="74" rx="8"/><text class="t" x="24" y="60">1 Arrange</text><text class="s" x="24" y="79">page + 4 objects</text><text class="s" x="24" y="95">in A–D</text>
+      <rect class="card" x="176" y="36" width="140" height="74" rx="8"/><text class="t" x="190" y="60">2 Calibrate</text><text class="s" x="190" y="79">E with box empty,</text><text class="s" x="190" y="95">S with it loaded</text>
+      <rect class="card new" x="342" y="36" width="140" height="74" rx="8"/><text class="t" x="356" y="60">3 Start trial</text><text class="s" x="356" y="79">say what you'll do:</text><text class="s" x="356" y="95">"remove A"</text>
+      <rect class="card soft" x="508" y="36" width="140" height="74" rx="8"/><text class="t" x="522" y="60">4 Act</text><text class="s" x="522" y="79">hand in, take A,</text><text class="s" x="522" y="95">hand out</text>
+      <rect class="card new" x="674" y="36" width="140" height="74" rx="8"/><text class="t" x="688" y="60">5 Recorder</text><text class="s" x="688" y="79">saves crops, scores,</text><text class="s" x="688" y="95">decision vs. label</text>
+      <rect class="card new" x="840" y="36" width="150" height="74" rx="8"/><text class="t" x="854" y="60">6 Evaluator</text><text class="s" x="854" y="79">replays thresholds:</text><text class="s" x="854" y="95">misses, false alarms</text>
+      <line class="edge" x1="150" y1="73" x2="174" y2="73" marker-end="url(#a4)"/>
+      <line class="edge" x1="316" y1="73" x2="340" y2="73" marker-end="url(#a4)"/>
+      <line class="edge" x1="482" y1="73" x2="506" y2="73" marker-end="url(#a4)"/>
+      <line class="edge" x1="648" y1="73" x2="672" y2="73" marker-end="url(#a4)"/>
+      <line class="edge" x1="814" y1="73" x2="838" y2="73" marker-end="url(#a4)"/>
+      <polyline class="edge" points="744,110 744,150 80,150 80,112" marker-end="url(#a4)"/>
+      <text class="s" x="412" y="168" text-anchor="middle">next permutation (trial mode starts each one from a clean state)</text>
+      <text class="s" x="915" y="132" text-anchor="middle">best setting →</text>
+      <text class="s" x="915" y="148" text-anchor="middle">settings.json</text>
+    </svg>
+    </div>
+    <figcaption>A good first set is around 40 trials: remove each object, swap two objects, add a foreign object, partial removal, a hand resting in view, and a lighting change, each a few times. The evaluator needs both the recorded scores and your labels, which is why step 3 asks what you are about to do.</figcaption>
+  </figure>
+
+  <!-- ============================================================ flaws -->
+  <div class="col">
+    <h2>Flaws this design has to answer</h2>
+    <div class="tw"><table>
+      <thead><tr><th>Flaw</th><th>What would go wrong</th><th>Proposed answer</th></tr></thead>
+      <tbody>
+        <tr><td>Laptop on the internet</td><td>Anyone with the link could post fake "compartment emptied" events, or change the schedule.</td><td>Camera endpoints answer only to the laptop itself. Son's pages need a login. The tunnel provides HTTPS.</td></tr>
+        <tr><td>Laptop asleep or off</td><td>No reminders, and a dead laptop can't tell the son it's dead.</td><td>Never-sleep power plan. An outside watchdog (e.g. a free healthchecks.io ping every minute) alerts the son when pings stop.</td></tr>
+        <tr><td>Stop button erases the dose</td><td>The father silencing the beep would mark the dose cancelled.</td><td>Split it: father gets "Stop sound" (dose stays open); only the son can cancel.</td></tr>
+        <tr><td>Recalibration needs the keyboard</td><td>After a refill, someone must press S in the camera window at home.</td><td>Server sends "recalibrate" to the camera; the son or father triggers it from their app.</td></tr>
+        <tr><td>Shareable link changes</td><td>With a free quick tunnel, the son's bookmark breaks after every restart.</td><td>Use a fixed link (decision 1). Alerts go through ntfy, which doesn't depend on the link.</td></tr>
+        <tr><td>Time zones</td><td>If the son lives in another time zone, "08:00" is ambiguous.</td><td>Dose times are always the father's local time, and the app labels them that way.</td></tr>
+        <tr><td>Test runs pollute real history</td><td>Dozens of test removals would alert the son and fill his reports.</td><td>Trial mode: separate history, no alerts to the son.</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+
+  <!-- ============================================================ decisions -->
+  <div class="col">
+    <h2>Decisions I need from you</h2>
+    <p>Answer by number. Each one has my recommendation, so "go with your picks" is a valid answer.</p>
+    <ol class="decide">
+      <li><b>Shareable link</b><span>(a) Cloudflare quick tunnel: free, no account, new random link at every start. (b) ngrok: free account, one fixed link. (c) Cloudflare with your own domain: fixed and branded, needs a domain.</span><span class="rec"><strong>Pick (b)</strong> for real use; (a) is fine for a one-time demo.</span></li>
+      <li><b>Son's login</b><span>One caretaker account with a password set on first start, or a secret link with no password?</span><span class="rec"><strong>Password.</strong> A secret link can be forwarded by mistake.</span></li>
+      <li><b>Where the father sees his screen</b><span>(a) The laptop's own screen next to the box. (b) An old phone or tablet on home Wi-Fi. (c) No screen, light and beep only.</span><span class="rec"><strong>Pick (a)</strong> now; (b) later works with the same page.</span></li>
+      <li><b>Father's buttons</b><span>Only "Stop sound", or also "I took it"? The camera decides either way. A self-report that disagrees with the camera would be shown to the son as a conflict.</span><span class="rec"><strong>Only "Stop sound"</strong> to start. Fewer buttons, fewer mistakes.</span></li>
+      <li><b>Language on the father's screen</b><span>English, Hindi, or both side by side?</span><span class="rec"><strong>Both</strong>, big text, plus the compartment letter shown huge.</span></li>
+      <li><b>Photos for the son</b><span>(a) None. (b) A crop of the box at each event. (c) Live view.</span><span class="rec"><strong>Pick (b)</strong>, opt-in. It shows the box only, never the room.</span></li>
+      <li><b>What the son can do remotely</b><span>Edit the schedule, start a reminder now, cancel a dose, and mark "confirmed by phone call".</span><span class="rec"><strong>All four.</strong> The last one keeps his reports honest when he checks in by phone.</span></li>
+      <li><b>Refills</b><span>Who refills the box, and how often? Daily, weekly, or by the son on visits?</span><span class="rec">This decides whether recalibration must be one tap for the father or can be a step for the son.</span></li>
+      <li><b>Trial mode for testing</b><span>Separate test history, clean state per trial, no alerts to the son.</span><span class="rec"><strong>Yes</strong>, and build it first, so tonight's webcam session produces usable data.</span></li>
+    </ol>
+  </div>
+
+  <!-- ============================================================ phases -->
+  <div class="col">
+    <h2>Build order after you approve</h2>
+    <div class="phases">
+      <div class="phase"><div class="when">Phase 1 · tonight</div><h3>Trial mode</h3><ul><li>Clean state per trial, labelled by you</li><li>Recorder: crops, scores, decisions</li><li>Evaluator: misses and false alarms per setting</li></ul></div>
+      <div class="phase"><div class="when">Phase 2</div><h3>Two apps</h3><ul><li>Son: login, live status, schedule, history, actions</li><li>Father: full-screen "Take from A", stop sound</li><li>Camera endpoints locked to the laptop</li><li>Recalibrate from the app</li></ul></div>
+      <div class="phase"><div class="when">Phase 3</div><h3>Shareable link</h3><ul><li>Tunnel with a fixed link</li><li>ntfy alerts to the son's phone</li><li>Offline watchdog</li></ul></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
