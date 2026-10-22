@@ -1,18 +1,61 @@
+"""MedVerify local backend: schedule, dose sessions, device control, notifications, web console.
+
+Run:  .venv\\Scripts\\python.exe -m backend.app   then open http://127.0.0.1:5000
+
+Paths can be redirected with MEDVERIFY_DATA_DIR / MEDVERIFY_CONFIG_DIR (used by tests so
+they never write into the real data folder).
+"""
 from __future__ import annotations
+
+import json
+import os
+import threading
+import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-import json
-import uuid
-from flask import Flask, jsonify, request, render_template_string
-from backend.device_adapter import build_device
+
+from flask import Flask, jsonify, request, send_from_directory
+
+from backend.device_adapter import MockDevice, build_device
+from backend.dose_manager import DoseConfig, DoseManager
+from backend.notifier import WARNING, build_notifier
+from backend.schedule import ScheduleError, ScheduleStore
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = ROOT / "data"
-DATA_DIR.mkdir(exist_ok=True)
+CONFIG_DIR = Path(os.getenv("MEDVERIFY_CONFIG_DIR") or ROOT / "config")
+DATA_DIR = Path(os.getenv("MEDVERIFY_DATA_DIR") or ROOT / "data")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+SETTINGS_FILE = ROOT / "config" / "settings.json"  # Settings are always read from the repo config
 EVENTS_FILE = DATA_DIR / "events.jsonl"
 OBSERVATIONS_FILE = DATA_DIR / "observations.jsonl"
-COMPARTMENTS = {"A", "B", "C", "D"}
-DEVICE = build_device()
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+def load_settings() -> dict:
+    try:
+        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+SETTINGS = load_settings()
+COMPARTMENTS = [str(c).upper() for c in SETTINGS.get("compartments", ["A", "B", "C", "D"])]
+COMPARTMENT_SET = set(COMPARTMENTS)
+
+NOTIFIER = build_notifier(SETTINGS, DATA_DIR / "notifications.jsonl")
+try:
+    DEVICE = build_device(SETTINGS)
+except Exception as exc:  # Misconfigured hardware must not stop reminders and notifications
+    DEVICE = MockDevice()
+    NOTIFIER.notify("Pill box hardware not configured",
+                    f"{exc}. Running in mock mode: lights/buzzer will not work.", WARNING, "DEVICE_ERROR")
+SCHEDULE = ScheduleStore(CONFIG_DIR / "schedule.json", COMPARTMENT_SET)
+DOSES = DoseManager(
+    DEVICE, NOTIFIER, SCHEDULE, COMPARTMENTS,
+    sessions_file=DATA_DIR / "dose_sessions.json",
+    config=DoseConfig.from_settings(SETTINGS),
+)
 RECENT_EVENTS: list[dict] = []
 RECENT_OBSERVATIONS: list[dict] = []
 
@@ -28,35 +71,16 @@ def append_jsonl(path: Path, obj: dict) -> None:
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
 
-PAGE = r"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MedVerify Local Console</title>
-<style>
-:root{color-scheme:dark;font-family:system-ui,Segoe UI,sans-serif;background:#101729;color:#e8edf8}body{max-width:920px;margin:32px auto;padding:0 18px}h1{margin-bottom:4px}.muted{color:#a9b5ce}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.slot,section{background:#18233b;border:1px solid #30405f;border-radius:14px;padding:16px}.slot{cursor:pointer;color:#fff;font-size:18px}.slot.active{border:2px solid #71d6a0;background:#1b3b3b}.row{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0}button{background:#284469;border:0;border-radius:9px;color:white;padding:11px 15px;cursor:pointer}.danger{background:#713744}.status{white-space:pre-wrap;font-family:ui-monospace,monospace;background:#0b1220;padding:14px;border-radius:10px;min-height:44px}.small{font-size:13px}.event{padding:8px 0;border-bottom:1px solid #30405f}@media(max-width:540px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-</style></head><body>
-<h1>MedVerify</h1><div class="muted">Local development console · Mock hardware mode</div>
-<p>This console simulates reminders without requiring an ESP32 or physical LEDs. It does not prove medication was swallowed.</p>
-<section><h2>Choose compartment</h2><div class="grid" id="slots">
-<button class="slot active" data-slot="A">Compartment A</button><button class="slot" data-slot="B">Compartment B</button><button class="slot" data-slot="C">Compartment C</button><button class="slot" data-slot="D">Compartment D</button></div>
-<div class="row"><button id="remind">Trigger reminder</button><button id="stop" class="danger">Stop alert</button><button id="refresh">Refresh status</button></div>
-<h3>System status</h3><div class="status" id="status">Loading...</div></section>
-<section style="margin-top:16px"><h2>Recent events</h2><div id="events" class="muted">No events yet.</div></section>
-<section style="margin-top:16px"><h2>Recent observations</h2><div id="observations" class="muted">No observations yet.</div></section>
-<p class="muted small">Tonight: software-only simulation. Tomorrow: configure and test the ESP32 adapter after confirming exact board/module markings, wiring, and local network.</p>
-<script>
-let selected='A';
-document.querySelectorAll('[data-slot]').forEach(b=>b.addEventListener('click',()=>{selected=b.dataset.slot;document.querySelectorAll('[data-slot]').forEach(x=>x.classList.toggle('active',x===b));}));
-async function api(path,method='GET',body){let opts={method,headers:{'Content-Type':'application/json'}};if(body)opts.body=JSON.stringify(body);let r=await fetch(path,opts);let j=await r.json();if(!r.ok)throw new Error(j.error||r.statusText);return j;}
-async function refresh(){try{let s=await api('/api/status');document.getElementById('status').textContent=JSON.stringify({device:s.device,counts:s.counts},null,2);document.getElementById('events').innerHTML=s.events.length?s.events.slice().reverse().map(e=>`<div class="event">${e.timestamp} · ${e.type} · ${e.compartment_id||'-'} · ${e.status||''}</div>`).join(''):'No events yet.';document.getElementById('observations').innerHTML=s.observations.length?s.observations.slice().reverse().map(o=>`<div class="event">${o.timestamp} · ${o.compartment_id||'-'} · ${o.state||'OBSERVED'} · change ${o.changed_pixel_fraction??'n/a'}</div>`).join(''):'No observations yet.';}catch(e){document.getElementById('status').textContent='Error: '+e.message;}}
-document.getElementById('remind').addEventListener('click',async()=>{try{let r=await api('/api/reminders','POST',{compartment_id:selected});document.getElementById('status').textContent=JSON.stringify(r,null,2);if('Notification'in window&&Notification.permission==='granted')new Notification('MedVerify reminder',{body:'Please check compartment '+selected+'.'});await refresh();}catch(e){document.getElementById('status').textContent='Error: '+e.message;}});
-document.getElementById('stop').addEventListener('click',async()=>{try{let r=await api('/api/device/stop','POST',{});document.getElementById('status').textContent=JSON.stringify(r,null,2);await refresh();}catch(e){document.getElementById('status').textContent='Error: '+e.message;}});
-document.getElementById('refresh').addEventListener('click',refresh);refresh();setInterval(refresh,4000);
-</script></body></html>"""
+def remember_event(event: dict) -> None:
+    RECENT_EVENTS.append(event)
+    del RECENT_EVENTS[:-100]
+    append_jsonl(EVENTS_FILE, event)
 
 
+# --------------------------------------------------------------------------- pages
 @app.get("/")
 def home():
-    return render_template_string(PAGE)
+    return send_from_directory(STATIC_DIR, "console.html")
 
 
 @app.get("/api/health")
@@ -64,71 +88,175 @@ def health():
     return jsonify({"ok": True, "service": "medverify-local", "device_mode": DEVICE.mode, "timestamp": utc_now()})
 
 
+# ----------------------------------------------------------------------- reminders
 @app.post("/api/reminders")
 def create_reminder():
+    """Start a dose session now for one compartment (manual reminder / test)."""
     body = request.get_json(silent=True) or {}
     compartment = str(body.get("compartment_id", "")).upper()
-    if compartment not in COMPARTMENTS:
-        return jsonify({"ok": False, "error": "compartment_id must be A, B, C, or D"}), 400
-    event_id = str(body.get("event_id") or f"evt-{uuid.uuid4().hex[:10]}")
-    event = {"event_id": event_id, "timestamp": utc_now(), "type": "REMINDER", "compartment_id": compartment, "status": "REQUESTED"}
-    try:
-        result = DEVICE.trigger_reminder(compartment, event_id)
-        event["status"] = "SENT_TO_DEVICE_ADAPTER"
-        event["device_result"] = result
-    except Exception as exc:
-        event["status"] = "DEVICE_ERROR"
-        event["error"] = str(exc)
-        RECENT_EVENTS.append(event)
-        append_jsonl(EVENTS_FILE, event)
-        return jsonify({"ok": False, "event": event, "error": str(exc)}), 502
-    RECENT_EVENTS.append(event)
-    del RECENT_EVENTS[:-100]
-    append_jsonl(EVENTS_FILE, event)
-    return jsonify({"ok": True, "event": event, "device": result})
+    if compartment not in COMPARTMENT_SET:
+        return jsonify({"ok": False, "error": f"compartment_id must be one of {', '.join(COMPARTMENTS)}"}), 400
+    session = DOSES.start_session(compartment, label=str(body.get("label", ""))[:60])
+    event = {
+        "event_id": str(body.get("event_id") or f"evt-{uuid.uuid4().hex[:10]}"),
+        "timestamp": utc_now(),
+        "type": "REMINDER",
+        "compartment_id": compartment,
+        "session_id": session.id,
+        "status": "DEVICE_ERROR" if "DEVICE_ERROR" in session.flags else "SENT_TO_DEVICE_ADAPTER",
+    }
+    remember_event(event)
+    return jsonify({"ok": True, "event": event, "session": session.to_dict(), "device": DEVICE.get_state()})
 
 
 @app.post("/api/device/stop")
 def stop_device_alert():
-    try:
-        result = DEVICE.stop_alert()
-        event = {"event_id": f"evt-{uuid.uuid4().hex[:10]}", "timestamp": utc_now(), "type": "STOP_ALERT", "status": "SENT_TO_DEVICE_ADAPTER", "device_result": result}
-        RECENT_EVENTS.append(event)
-        append_jsonl(EVENTS_FILE, event)
-        return jsonify({"ok": True, "event": event, "device": result})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 502
+    """Stop the alert. Open doses are closed as CANCELLED so reminders do not restart."""
+    cancelled = DOSES.cancel_all()
+    if not cancelled:
+        try:
+            DEVICE.stop_alert()
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 502
+    event = {"event_id": f"evt-{uuid.uuid4().hex[:10]}", "timestamp": utc_now(), "type": "STOP_ALERT",
+             "status": "SENT_TO_DEVICE_ADAPTER", "cancelled_sessions": cancelled}
+    remember_event(event)
+    return jsonify({"ok": True, "event": event, "device": DEVICE.get_state()})
 
 
+# -------------------------------------------------------------------- vision input
 @app.post("/api/observations")
 def record_observation():
     body = request.get_json(silent=True) or {}
     compartment = str(body.get("compartment_id", "")).upper()
-    if compartment and compartment not in COMPARTMENTS:
-        return jsonify({"ok": False, "error": "compartment_id must be A, B, C, or D"}), 400
-    allowed = {"compartment_id", "state", "changed_pixel_fraction", "before_image", "after_image", "note"}
+    if compartment and compartment not in COMPARTMENT_SET:
+        return jsonify({"ok": False, "error": f"compartment_id must be one of {', '.join(COMPARTMENTS)}"}), 400
+    allowed = {"compartment_id", "state", "previous_state", "changed_pixel_fraction", "before_image",
+               "after_image", "note"}
     obs = {k: v for k, v in body.items() if k in allowed}
     obs["timestamp"] = utc_now()
     obs["type"] = "VISION_OBSERVATION"
     RECENT_OBSERVATIONS.append(obs)
     del RECENT_OBSERVATIONS[:-100]
     append_jsonl(OBSERVATIONS_FILE, obs)
+    if compartment and obs.get("state"):
+        DOSES.record_state(compartment, str(obs["state"]).upper())
     return jsonify({"ok": True, "observation": obs}), 201
 
 
+@app.post("/api/vision/heartbeat")
+def vision_heartbeat():
+    body = request.get_json(silent=True) or {}
+    states = body.get("states") or {}
+    if not isinstance(states, dict):
+        return jsonify({"ok": False, "error": "states must be an object"}), 400
+    DOSES.heartbeat({
+        "monitoring": bool(body.get("monitoring", False)),
+        "trial": bool(body.get("trial", False)),
+        "camera_index": body.get("camera_index"),
+        "states": {str(k).upper(): str(v).upper() for k, v in states.items()},
+    })
+    return jsonify({"ok": True})
+
+
+# ------------------------------------------------------------------------ schedule
+@app.get("/api/schedule")
+def list_schedule():
+    return jsonify({"ok": True, "doses": SCHEDULE.list(), "load_error": SCHEDULE.load_error})
+
+
+@app.post("/api/schedule")
+def add_schedule():
+    try:
+        slot = SCHEDULE.add(request.get_json(silent=True) or {})
+    except ScheduleError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "dose": slot.to_dict()}), 201
+
+
+@app.put("/api/schedule/<slot_id>")
+def update_schedule(slot_id: str):
+    try:
+        slot = SCHEDULE.update(slot_id, request.get_json(silent=True) or {})
+    except KeyError:
+        return jsonify({"ok": False, "error": "dose not found"}), 404
+    except ScheduleError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "dose": slot.to_dict()})
+
+
+@app.delete("/api/schedule/<slot_id>")
+def delete_schedule(slot_id: str):
+    if not SCHEDULE.delete(slot_id):
+        return jsonify({"ok": False, "error": "dose not found"}), 404
+    return jsonify({"ok": True})
+
+
+# ------------------------------------------------------------------- notifications
+@app.get("/api/notifications")
+def list_notifications():
+    limit = max(1, min(200, request.args.get("limit", 50, type=int)))
+    return jsonify({"ok": True, "channels": NOTIFIER.channel_names, "notifications": NOTIFIER.recent(limit)})
+
+
+@app.post("/api/notifications/test")
+def test_notification():
+    n = NOTIFIER.notify("MedVerify test notification",
+                       "If you can read this, notifications are working.", kind="TEST")
+    return jsonify({"ok": True, "notification": n.to_dict(), "channels": NOTIFIER.channel_names})
+
+
+# -------------------------------------------------------------------------- status
 @app.get("/api/status")
 def status():
-    counts = {"PASS": 0, "FAIL": 0, "REMINDER": 0, "STOP_ALERT": 0, "DEVICE_ERROR": 0}
+    doses = DOSES.status()
+    counts = {"REMINDER": 0, "STOP_ALERT": 0, "DEVICE_ERROR": 0, **doses["outcome_counts"]}
     for ev in RECENT_EVENTS:
-        if ev.get("type") in counts:
+        if ev.get("type") in ("REMINDER", "STOP_ALERT"):
             counts[ev["type"]] += 1
         if ev.get("status") == "DEVICE_ERROR":
             counts["DEVICE_ERROR"] += 1
-    return jsonify({"ok": True, "timestamp": utc_now(), "device": DEVICE.get_state(), "counts": counts, "events": RECENT_EVENTS[-100:], "observations": RECENT_OBSERVATIONS[-100:]})
+    return jsonify({
+        "ok": True,
+        "timestamp": utc_now(),
+        "device": DEVICE.get_state(),
+        "counts": counts,
+        "events": RECENT_EVENTS[-100:],
+        "observations": RECENT_OBSERVATIONS[-100:],
+        "doses": doses,
+        "notification_channels": NOTIFIER.channel_names,
+        "notifications": NOTIFIER.recent(30),
+        "schedule_error": SCHEDULE.load_error,
+    })
+
+
+# ------------------------------------------------------------------- background
+_scheduler_started = False
+
+
+def start_scheduler(interval_s: float = 1.0) -> None:
+    """Tick the dose manager in the background (starts doses, re-reminds, times out)."""
+    global _scheduler_started
+    if _scheduler_started:
+        return
+    _scheduler_started = True
+
+    def loop() -> None:
+        while True:
+            try:
+                DOSES.tick()
+            except Exception as exc:  # Never let one bad tick stop all future reminders
+                print(f"[SCHEDULER] tick failed: {exc}")
+            time.sleep(interval_s)
+
+    threading.Thread(target=loop, name="medverify-scheduler", daemon=True).start()
 
 
 if __name__ == "__main__":
     print("MedVerify local server starting...")
     print("Device mode:", DEVICE.mode)
+    print("Notification channels:", ", ".join(NOTIFIER.channel_names))
+    print(f"Schedule: {len(SCHEDULE.slots)} dose time(s) from {SCHEDULE.path}")
+    start_scheduler()
     print("Open http://127.0.0.1:5000 in your browser")
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    app.run(host="127.0.0.1", port=5000, debug=False, threaded=True)
