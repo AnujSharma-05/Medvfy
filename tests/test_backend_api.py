@@ -28,12 +28,14 @@ class BackendApiTests(unittest.TestCase):
         self.assertIn("medverify-tests-", str(backend_app.DATA_DIR))
         self.assertIn("medverify-tests-", str(backend_app.SCHEDULE.path))
 
-    def test_console_page_served(self):
-        r = self.client.get("/")
-        self.assertEqual(r.status_code, 200)
-        self.assertIn(b"MedVerify", r.data)
-        self.assertIn(b"/api/status", r.data)
-        r.close()
+    def test_pages_served(self):
+        for path, marker in (("/", b"/patient"), ("/console", b"/api/status"),
+                             ("/patient", b"/api/patient/state"), ("/care", b"/api/care/status")):
+            with self.subTest(path=path):
+                r = self.client.get(path)
+                self.assertEqual(r.status_code, 200)
+                self.assertIn(marker, r.data)
+                r.close()
 
     def test_schedule_crud(self):
         r = self.client.post("/api/schedule", json={"time": "08:00", "compartment_id": "a", "label": "Morning"})

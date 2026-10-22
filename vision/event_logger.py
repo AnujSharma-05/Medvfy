@@ -53,6 +53,7 @@ class EventLogger:
         self.failed_count = 0
         self.dropped_count = 0
         self.heartbeat_failures = 0
+        self._commands: queue.Queue[dict[str, Any]] = queue.Queue()
         self.last_delivery_error: str | None = None
 
         self._pending: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=max(1, max_pending))
@@ -159,7 +160,7 @@ class EventLogger:
                 if item is None:
                     return
                 if "heartbeat" in item:
-                    if not self._post("/api/vision/heartbeat", item["heartbeat"]):
+                    if not self._post("/api/vision/heartbeat", item["heartbeat"], self._accept_commands):
                         self.heartbeat_failures += 1
                     continue
                 if self.send_to_backend(
@@ -212,7 +213,22 @@ class EventLogger:
             payload["previous_state"] = previous_state
         return self._post("/api/observations", payload)
 
-    def _post(self, path: str, payload: dict[str, Any]) -> bool:
+    def _accept_commands(self, body: Any) -> None:
+        commands = body.get("commands") if isinstance(body, dict) else None
+        for cmd in commands or []:
+            if isinstance(cmd, dict) and cmd.get("id") and cmd.get("type"):
+                self._commands.put(cmd)
+
+    def take_commands(self) -> list[dict[str, Any]]:
+        """Commands the server sent back on heartbeats since the last call (non-blocking)."""
+        out = []
+        while True:
+            try:
+                out.append(self._commands.get_nowait())
+            except queue.Empty:
+                return out
+
+    def _post(self, path: str, payload: dict[str, Any], on_body: Any = None) -> bool:
         if not self.server_url:
             return False
         try:
@@ -222,6 +238,11 @@ class EventLogger:
                 timeout=1.0,
             )
             resp.raise_for_status()
+            if on_body is not None:
+                try:
+                    on_body(resp.json())
+                except ValueError:
+                    pass  # Older servers reply without a JSON body
             return True
         except requests.RequestException as exc:
             # Backend unavailability is handled gracefully without losing data

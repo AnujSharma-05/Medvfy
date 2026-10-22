@@ -42,6 +42,12 @@ class MockDevice:
         print("[MOCK DEVICE] Alert stopped; all compartment LEDs OFF")
         return {"ok": True, "mode": self.mode, "device_state": self.state.copy()}
 
+    def silence(self) -> dict[str, Any]:
+        """Buzzer off, compartment light stays on."""
+        self.state.update({"buzzer_on": False})
+        print(f"[MOCK DEVICE] Buzzer silenced; LED {self.state['active_compartment']} stays ON")
+        return {"ok": True, "mode": self.mode, "device_state": self.state.copy()}
+
     def get_state(self) -> dict[str, Any]:
         return {"mode": self.mode, **self.state}
 

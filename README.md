@@ -17,6 +17,10 @@ MedVerify monitors designated medication compartments (A, B, C, D) using compute
 .\run_tests.bat         # full offline test suite
 ```
 
+Once the server runs: patient screen `http://127.0.0.1:5000/patient`, caretaker app
+`http://127.0.0.1:5050/care` (create its password first at `http://127.0.0.1:5000/care` on the laptop),
+developer console `http://127.0.0.1:5000/console`. See [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) §11.
+
 ---
 
 ## 1. Architecture & Modules
@@ -29,7 +33,9 @@ Medvfy/
 │   ├── schedule.py           # Daily dose times per compartment (config/schedule.json)
 │   ├── notifier.py           # In-app feed + optional phone push (ntfy)
 │   ├── device_adapter.py     # MockDevice, ESP32SerialDevice (existing firmware), ESP32HTTPDevice (future)
-│   └── static/console.html   # Web console
+│   ├── auth.py               # Caretaker password (hashed), login lockout
+│   ├── commands.py           # Server → camera commands (recalibrate) via heartbeat replies
+│   └── static/               # care.html (son), patient.html (father), console.html (dev), index.html
 ├── tools/fake_camera.py      # Keyboard-driven fake camera for testing without a webcam
 ├── docs/HOW_IT_WORKS.md      # End-to-end explanation, flaws, setup, test protocol
 ├── config/

@@ -99,6 +99,8 @@ class DoseSession:
     closed_at: str | None = None
     reminders_sent: int = 0
     last_reminder_at: str | None = None
+    silenced_at: str | None = None   # Patient pressed "Stop sound": no more beeps, dose stays open
+    closed_by: str | None = None     # "camera", "timeout", "caretaker", ...
     flags: list[str] = field(default_factory=list)
     events: list[dict[str, str]] = field(default_factory=list)
     id: str = field(default_factory=lambda: f"dose-{uuid.uuid4().hex[:10]}")
@@ -266,6 +268,85 @@ class DoseManager:
         self._refresh_device(now)
         self._save()
 
+    def find(self, session_id: str) -> DoseSession | None:
+        return next((s for s in self.sessions if s.id == session_id), None)
+
+    def silence(self, now: datetime | None = None, by: str = "patient") -> int:
+        """Stop the sound for open doses WITHOUT closing them (the light and the dose stay)."""
+        with self._lock:
+            now = self._now(now)
+            silenced = 0
+            for s in self.active_sessions():
+                if not s.silenced_at:
+                    s.silenced_at = now.isoformat(timespec="seconds")
+                    s.log(now, f"Sound stopped by {by}")
+                    silenced += 1
+            if silenced:
+                quiet = getattr(self.device, "silence", None)
+                try:
+                    if quiet:
+                        quiet()
+                except Exception as exc:
+                    print(f"[DOSE] Device silence failed: {exc}")
+                self._save()
+            return silenced
+
+    def remind_now(self, compartment: str, now: datetime | None = None, by: str = "caretaker") -> DoseSession:
+        """Beep again for an open dose, or open a new dose for this compartment."""
+        with self._lock:
+            now = self._now(now)
+            compartment = compartment.upper()
+            own = self._active_for(compartment)
+            if own is None:
+                return self.start_session(compartment, now, label=f"Reminder from {by}")
+            own.reminders_sent += 1
+            own.last_reminder_at = now.isoformat(timespec="seconds")
+            own.silenced_at = None  # An explicit reminder overrides an earlier "stop sound"
+            own.log(now, f"Reminder sent by {by}")
+            self._device_remind(own, now)
+            self._notify(own, f"Reminder sent: compartment {compartment}",
+                         f"The box was asked to beep again for compartment {compartment}.", INFO, "REMOTE_REMINDER")
+            self._save()
+            return own
+
+    def cancel_session(self, session_id: str, now: datetime | None = None, by: str = "caretaker") -> DoseSession | None:
+        with self._lock:
+            now = self._now(now)
+            s = self.find(session_id)
+            if s is None or s.status != ACTIVE:
+                return None
+            s.closed_by = by
+            self.close_session(s, "CANCELLED", now, f"Cancelled by {by}")
+            return s
+
+    def confirm_session(self, session_id: str, now: datetime | None = None, by: str = "caretaker") -> DoseSession | None:
+        """A person confirms the dose (e.g. by phone call). Recorded as CONFIRMED, distinct from the
+        camera's REMOVED, so reports always show which evidence a result rests on."""
+        with self._lock:
+            now = self._now(now)
+            s = self.find(session_id)
+            if s is None or s.status != ACTIVE:
+                return None
+            s.closed_by = by
+            self.close_session(s, "CONFIRMED", now, f"Confirmed by {by} (not seen by the camera)")
+            self._notify(s, f"Dose confirmed by {by}: compartment {s.compartment_id}",
+                         f"Marked as taken by {by} at {fmt_time(now)}. The camera did not confirm a removal.",
+                         INFO, "DOSE_CONFIRMED")
+            return s
+
+    def mark_recalibrated(self, now: datetime | None = None, by: str = "caretaker") -> None:
+        """The camera re-photographed the box as 'loaded' (refill). Reset states without treating
+        the change as a return, so a refill soon after a dose is not reported as 'put back'."""
+        with self._lock:
+            now = self._now(now)
+            for c in self.compartment_states:
+                self.compartment_states[c] = {"state": "EXPECTED_PRESENT",
+                                              "updated_at": now.isoformat(timespec="seconds"), "pending": None}
+            self._notify(None, "Box recalibrated",
+                         f"Requested by {by}: the camera saved the current box as 'loaded' for every compartment.",
+                         INFO, "RECALIBRATED")
+            self._save()
+
     def cancel_all(self, now: datetime | None = None, reason: str = "Stopped from console") -> int:
         with self._lock:
             now = self._now(now)
@@ -299,11 +380,15 @@ class DoseManager:
                 if now - last >= timedelta(minutes=self.config.remind_every_minutes):
                     session.reminders_sent += 1
                     session.last_reminder_at = now.isoformat(timespec="seconds")
-                    session.log(now, f"Reminder #{session.reminders_sent}")
-                    self._device_remind(session, now)
+                    session.log(now, f"Reminder #{session.reminders_sent}"
+                                     + (" (sound silenced by patient)" if session.silenced_at else ""))
+                    if not session.silenced_at:
+                        self._device_remind(session, now)
                     self._notify(session, "Reminder: medicine still waiting",
                                  f"Compartment {session.compartment_id} has not been opened yet "
-                                 f"(reminder {session.reminders_sent}).", WARNING, "DOSE_REMINDER")
+                                 f"(reminder {session.reminders_sent}"
+                                 f"{'; sound silenced at the box' if session.silenced_at else ''}).",
+                                 WARNING, "DOSE_REMINDER")
                     self._save()
 
             self._check_camera(now)
@@ -323,6 +408,7 @@ class DoseManager:
                    f"and was {'only partly changed' if partial else 'not emptied'} within "
                    f"{int(self.config.window_minutes)} minutes.{extra}")
         self._notify(session, title, message, CRITICAL, f"DOSE_{outcome}")
+        session.closed_by = "timeout"
         self.close_session(session, outcome, now, f"Window ended: {outcome}")
 
     def _check_camera(self, now: datetime) -> None:
@@ -382,6 +468,7 @@ class DoseManager:
         if own is not None:
             if after == "removed":
                 own.log(now, f"Camera confirmed compartment {compartment} emptied ({source})")
+                own.closed_by = "camera"
                 self._notify(own, f"Medicine removed from compartment {compartment}",
                              f"Compartment {compartment} was emptied at {fmt_time(now)}. "
                              "(The camera saw it removed; it cannot see it being swallowed.)",
@@ -401,6 +488,9 @@ class DoseManager:
             for s in others:
                 s.add_flag(f"WRONG_COMPARTMENT:{compartment}")
                 s.log(now, f"Compartment {compartment} opened instead")
+                # He is at the box doing the wrong thing: beep again even if he silenced it
+                # earlier (re-pointing the light beeps on this firmware anyway), and say so.
+                s.silenced_at = None
             targets = ", ".join(sorted({s.compartment_id for s in others}))
             self._notify(others[-1], f"Wrong compartment: {compartment}",
                          f"Compartment {compartment} was opened, but the medicine due now is in "

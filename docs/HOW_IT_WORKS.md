@@ -112,16 +112,17 @@ All of these numbers live in `config/settings.json`.
 | 2 | **Laptop sleep stops everything** (scheduler, camera). A sleeping laptop = no reminders. | Not solvable in software. Set Windows power to *never sleep when plugged in*; long-term, run on an always-on device (Raspberry Pi / mini PC). |
 | 3 | **Camera process must be running and monitoring.** If its window is closed, nothing is verified. | Mitigated: heartbeat → `CAMERA_OFFLINE` warning at dose time and during a dose. Not alerted *between* doses. |
 | 4 | **Calibration trusts the operator.** Whatever is in the box when `S` is pressed becomes "correct". | Procedural: load the box correctly, then press `S`. |
-| 5 | **Refill detection relies on looks.** A refilled compartment is recognised as loaded only if the new pills look like the calibrated ones. Different pills → stays "removed" → next dose flagged `NOT_LOADED`. | Procedural: after loading *different* pills, press `S` again. |
+| 5 | **Refill detection relies on looks.** A refilled compartment is recognised as loaded only if the new pills look like the calibrated ones. Different pills → stays "removed" → next dose flagged `NOT_LOADED`. | After a refill, the caretaker taps **Box refilled: recalibrate camera** (or press `S` at the camera). The camera waits until the box is still, saves new "loaded" photos, and reports back. |
 | 6 | **Thresholds are not yet tuned on real images.** The blob-count boost (≥ 0.15 on any count change) can over-react to compartment texture/reflections. | Needs real-camera sessions with ground truth (Milestone 3). |
 | 7 | **`PARTIAL_OR_WRONG` is confirmed on one observation** (no time confirmation), so a still hand inside a compartment can be read as "changed". | Mitigated by the motion gate and because the server only *flags* it (dose stays open). Candidate for time confirmation. |
 | 8 | **Blur check used a fixed sharpness threshold (60).** Measured on the real webcam: sharpness 13–22, so every frame would have been "blurry". | Fixed: blur is now judged relative to the sharpness recorded at `S` (`blur_min_ratio`, default 0.5). Recalibrate with `S` to record it. The overlay shows `sharp X/limit`. |
 | 9 | **Firmware lights one LED at a time.** Two compartments due together → light shows the latest; console/phone list both. | Firmware change later (hardware task). |
 | 10 | **Firmware beeps once per command**, not continuously. | Server re-beeps every 5 min. Continuous buzzing = firmware change. |
-| 11 | **No acknowledge button on the box.** Stopping the alert needs the console. | Hardware task (button on ESP32). |
+| 11 | **No acknowledge button on the box.** | The patient screen has **Stop sound**: it silences the beep but keeps the dose open (only the caretaker can cancel). A physical button on the ESP32 is still a hardware task. |
 | 12 | **Doses that fell entirely while the system was off are not recorded.** A dose >30 min late at start-up is skipped silently. | Known gap; record as "not monitored" in a later iteration. |
 | 13 | **Phone push via ntfy leaves the laptop.** The topic name is the only secret. | Off by default; use a long random topic; put it in an environment variable, not the committed settings file. |
-| 14 | **Console has no login.** | Bound to `127.0.0.1` only, so only this laptop can open it. A phone/web app will need auth. |
+| 14 | **Console has no login.** | Still true for the developer console, but it is reachable only on the laptop's own port. The caretaker app has a password and its own port (section 11). |
+| 15 | **A second server could start silently** and share port 5000 with the first (Windows address reuse), splitting requests between old and new code. | Fixed: the server refuses to start if its ports are busy and says so. |
 
 ---
 
@@ -263,3 +264,52 @@ a future comparator change gets measured on the same footage.
 Data per trial lives in `data/trials/<time>_<labels>/`: `trial.json` (labels, verdicts,
 settings), `evaluations.jsonl` (every score), `frames/` (each evaluated frame),
 `references.npz` (the calibration photos in force).
+
+---
+
+## 11. The apps: caretaker and patient
+
+Start the server (`run_server.bat` or `run_medverify.bat`). It prints three addresses:
+
+| Screen | Address | Who |
+|---|---|---|
+| Patient screen | `http://127.0.0.1:5000/patient` | The father, on the laptop screen next to the box |
+| Caretaker app | `http://127.0.0.1:5050/care` | The son (from his phone once the shareable link exists) |
+| Developer console | `http://127.0.0.1:5000/console` | You, while testing |
+
+**First run:** open `http://127.0.0.1:5000/care` **on the laptop** and create the caretaker
+password (8+ characters). It can only be created on the laptop, so nobody reaching the app
+through a public link can claim it first. Only a salted hash is stored, in
+`config/auth.json` (never committed). Five wrong passwords lock that client out for 5 minutes.
+
+**Patient screen:** shows in English and Hindi what to do, with the compartment letter as
+large as the screen allows. One button, **Stop sound**, appears only while a dose is due:
+it silences the beep but the dose stays open and the light stays on. Opening the wrong
+compartment shows "Not C, please use A" and beeps again. After a removal it shows
+"Done" for 10 minutes. Use the *Full screen* button at the bottom right.
+
+**Caretaker app** (refreshes every 5 s):
+- The open dose, with **Remind again**, **Taken (I checked by phone)** and **Cancel dose**.
+  "Taken" is recorded as `CONFIRMED`, distinct from the camera's `REMOVED`, so reports always
+  show what evidence a result rests on. Taken and Cancel need a second tap to confirm.
+- **Send reminder now** for any compartment.
+- **Box refilled: recalibrate camera**: the camera receives the request on its next
+  heartbeat (within ~5 s), waits until the box has been still for a second, saves new
+  "loaded" photos, and reports back. The app shows the result; if the camera never answers
+  within 2 minutes it says so.
+- Compartment states, the daily schedule (add / switch off / delete), alerts, and history.
+
+**Ports and safety.** The server listens on two ports, both only on this laptop:
+- `5000` serves everything local: the patient screen, the developer console, and the camera's
+  own endpoints.
+- `5050` serves the caretaker app and nothing else; any other path is a 404 there.
+
+When the shareable link is added (Phase 3), the tunnel must point at **5050 only**.
+Requests on 5000 that arrive through a proxy are refused, as a second line of defence.
+
+**Not in this basic version:** the shareable link itself (Phase 3), box photos for the son
+(decision 6), and a sound on the laptop when there is no ESP32 buzzer.
+
+**Ports busy?** If the server says *port 5000 already in use*, another MedVerify server
+window is still open: close it, then start again. Ports can be changed with
+`MEDVERIFY_LOCAL_PORT` / `MEDVERIFY_CARE_PORT`, or `local_port` / `care_port` in settings.

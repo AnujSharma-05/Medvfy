@@ -32,7 +32,7 @@ import numpy as np
 from vision.comparator import VisualComparator
 from vision.event_logger import EventLogger
 from vision.frame_quality import FrameQualityAssessor
-from vision.monitor import ContinuousMonitor, MonitorConfig
+from vision.monitor import EVALUATED, WAITING, ContinuousMonitor, MonitorConfig
 from vision.reference_store import ReferenceStore
 from vision.roi_manager import ROIManager
 from vision.state_machine import CompartmentState, CompartmentStateMachine, StateTransition
@@ -361,6 +361,28 @@ def main() -> None:
             sm.set_initial_state(s, CompartmentState.EXPECTED_PRESENT)
         return sm
 
+    command_results: list[dict[str, Any]] = []
+    seen_commands: set[str] = set()
+    pending_recalibration: dict[str, Any] | None = None
+
+    def calibrate_loaded(frame: np.ndarray) -> None:
+        """Save the current box as the 'loaded' reference (key S, or a caretaker's recalibrate)."""
+        crops = roi_manager.crop(frame, rois)
+        h, w = frame.shape[:2]
+        sharpness = FrameQualityAssessor().compute_blur_score(frame)
+        ref_store.save_expected(
+            crops,
+            {"camera_index": camera_index, "camera_width": w, "camera_height": h,
+             # Blur is judged relative to this: see MonitorConfig.blur_min_ratio
+             "calibration_sharpness": round(sharpness, 2)},
+        )
+        print(f"Calibration sharpness {sharpness:.1f}; frames below "
+              f"{sharpness * monitor.config.blur_min_ratio:.1f} will count as blurry.")
+        for s in slots:
+            state_machine.set_initial_state(s, CompartmentState.EXPECTED_PRESENT)
+            latest[s] = (CompartmentState.EXPECTED_PRESENT.value, 0.0)
+        monitor.reset()
+
     def labels_text() -> str:
         return " ".join(f"{i + 1}:{s}={recorder.labels[s]}" for i, s in enumerate(slots))
 
@@ -423,14 +445,26 @@ def main() -> None:
                 # Liveness + state snapshot: lets the backend notice a dead camera and
                 # recover any observation whose POST was lost.
                 last_heartbeat = now
+                # Results are repeated for 30 s: a heartbeat may be lost, and the server
+                # ignores results for commands it has already closed.
+                command_results[:] = [r for r in command_results if now - r["_at"] < 30.0]
                 logger.send_heartbeat({
                     # During trials the real doses are NOT being watched: say so, send no states.
                     "monitoring": monitoring and not trial_mode,
                     "trial": trial_mode,
                     "camera_index": camera_index,
                     "states": {} if trial_mode else {s: state_machine.get_state(s).value for s in slots},
+                    "command_results": [{k: v for k, v in r.items() if k != "_at"} for r in command_results],
                 })
 
+            for cmd in logger.take_commands():
+                if cmd["id"] not in seen_commands and cmd.get("type") == "recalibrate":
+                    seen_commands.add(cmd["id"])
+                    pending_recalibration = {"id": cmd["id"], "since": now}
+                    message = "Caretaker asked to recalibrate: keep hands out of the box."
+                    print(message)
+
+            tick = None
             if monitoring:
                 tick = monitor.process(frame, now)
                 q = monitor.last_quality
@@ -444,6 +478,27 @@ def main() -> None:
                     )
             else:
                 monitor_status = ""
+
+            if pending_recalibration is not None:
+                outcome = None
+                if trial_mode:
+                    outcome = (False, "The camera is in trial mode. Leave it (T) and try again.")
+                elif not rois:
+                    outcome = (False, "Compartment regions are not set on the camera (press R there).")
+                elif (tick is not None and tick.status in (WAITING, EVALUATED)) or (
+                        tick is None and now - pending_recalibration["since"] >= 2.0):
+                    # Box has been still for the settle period (or monitoring is off): photograph it.
+                    calibrate_loaded(frame)
+                    outcome = (True, "New 'loaded' photos saved.")
+                elif now - pending_recalibration["since"] > 60.0:
+                    outcome = (False, "The box never stayed still long enough. Keep hands away and retry.")
+                if outcome is not None:
+                    command_results.append({"id": pending_recalibration["id"], "ok": outcome[0],
+                                            "message": outcome[1], "_at": now})
+                    pending_recalibration = None
+                    last_heartbeat = None  # Report the result on the next frame
+                    message = f"Recalibration {'done' if outcome[0] else 'failed'}: {outcome[1]}"
+                    print(message)
 
             if trial_mode:
                 if not recorder.active:
@@ -588,21 +643,7 @@ def main() -> None:
                     message = "Press R to define all compartment regions first."
                     continue
 
-                crops = roi_manager.crop(frame, rois)
-                h, w = frame.shape[:2]
-                sharpness = FrameQualityAssessor().compute_blur_score(frame)
-                ref_store.save_expected(
-                    crops,
-                    {"camera_index": camera_index, "camera_width": w, "camera_height": h,
-                     # Blur is judged relative to this: see MonitorConfig.blur_min_ratio
-                     "calibration_sharpness": round(sharpness, 2)},
-                )
-                print(f"Calibration sharpness {sharpness:.1f}; frames below "
-                      f"{sharpness * monitor.config.blur_min_ratio:.1f} will count as blurry.")
-                for s in slots:
-                    state_machine.set_initial_state(s, CompartmentState.EXPECTED_PRESENT)
-                    latest[s] = (CompartmentState.EXPECTED_PRESENT.value, 0.0)
-                monitor.reset()
+                calibrate_loaded(frame)
                 message = "Expected baseline saved. Press M to monitor, or V to compare once."
                 print("Saved expected baseline.")
 

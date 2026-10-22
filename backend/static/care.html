@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MedVerify Care</title>
+<style>
+:root{--bg:#f3f5f4;--card:#fff;--text:#18201c;--muted:#5d6a63;--line:#d5dcd7;--accent:#24607f;--on-accent:#fff;
+  --ok:#2b7a4b;--warn:#a5690c;--bad:#b13a3a;color-scheme:light;font-family:system-ui,"Segoe UI",sans-serif}
+@media (prefers-color-scheme:dark){:root{--bg:#111614;--card:#1a201d;--text:#e4eae6;--muted:#9aa7a0;--line:#34413a;
+  --accent:#74aecf;--on-accent:#0b1a22;--ok:#5cc48a;--warn:#e3a945;--bad:#ee7b7b;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-size:16px;line-height:1.45}
+main{max-width:640px;margin:0 auto;padding:16px 16px 48px}
+header{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:12px}
+h1{font-size:22px;margin:0}
+h2{font-size:16px;margin:0 0 10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:12px}
+.card.due{border:2px solid var(--warn)}
+.muted{color:var(--muted)}.small{font-size:13px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.chip{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:3px 9px}
+.chip.ok{border-color:var(--ok);color:var(--ok)}.chip.warn{border-color:var(--warn);color:var(--warn)}.chip.bad{border-color:var(--bad);color:var(--bad)}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button,input,select{font:inherit}
+button{border:0;border-radius:10px;padding:11px 14px;background:var(--accent);color:var(--on-accent);cursor:pointer;min-height:44px;font-weight:600}
+button.ghost{background:transparent;color:var(--accent);border:1px solid var(--line)}
+button.danger{background:var(--bad)}
+button.armed{outline:3px solid var(--warn)}
+button:disabled{opacity:.55}
+input,select{border:1px solid var(--line);border-radius:10px;padding:10px;background:var(--card);color:var(--text);min-height:44px;min-width:0}
+.big{font-size:20px;font-weight:700}
+.boxes{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.box{border:1px solid var(--line);border-radius:10px;padding:8px;text-align:center}
+.box b{font-size:20px;display:block}
+.box.loaded{border-color:var(--ok)}.box.removed{border-color:var(--bad)}.box.changed{border-color:var(--warn)}
+.list{display:grid;gap:8px}
+.item{border-top:1px solid var(--line);padding-top:8px}
+.item:first-child{border-top:0;padding-top:0}
+.tag{display:inline-block;font-size:12px;border-radius:6px;padding:1px 7px;background:var(--bg);border:1px solid var(--line);margin-right:4px}
+.tag.REMOVED,.tag.CONFIRMED{color:var(--ok);border-color:var(--ok)}.tag.MISSED{color:var(--bad);border-color:var(--bad)}.tag.PARTIAL{color:var(--warn);border-color:var(--warn)}
+.n-warning b{color:var(--warn)}.n-critical b{color:var(--bad)}
+.msg{min-height:1.4em;font-size:14px;color:var(--bad)}
+.msg.ok{color:var(--ok)}
+[hidden]{display:none!important}
+form.auth{display:grid;gap:10px;max-width:360px}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>MedVerify Care</h1><div class="chips" id="chips"></div></div>
+    <button class="ghost" id="logout" hidden>Log out</button>
+  </header>
+
+  <!-- Setup (first run, only on the home laptop) -->
+  <section class="card" id="setupView" hidden>
+    <h2>Create the caretaker password</h2>
+    <p class="muted small">Do this once, on the home laptop. You will use it to log in from your phone.</p>
+    <form class="auth" id="setupForm">
+      <input type="password" id="setupPw" autocomplete="new-password" placeholder="New password (8+ characters)" required minlength="8" aria-label="New password">
+      <input type="password" id="setupPw2" autocomplete="new-password" placeholder="Repeat password" required aria-label="Repeat password">
+      <button type="submit">Create password</button>
+      <div class="msg" id="setupMsg"></div>
+    </form>
+  </section>
+  <section class="card" id="noSetupView" hidden>
+    <h2>Not set up yet</h2>
+    <p class="muted">The caretaker password has to be created on the home laptop first: open <b>http://127.0.0.1:5000/care</b> there.</p>
+  </section>
+
+  <!-- Login -->
+  <section class="card" id="loginView" hidden>
+    <h2>Log in</h2>
+    <form class="auth" id="loginForm">
+      <input type="password" id="loginPw" autocomplete="current-password" placeholder="Password" required aria-label="Password">
+      <button type="submit">Log in</button>
+      <div class="msg" id="loginMsg"></div>
+    </form>
+  </section>
+
+  <!-- App -->
+  <div id="appView" hidden>
+    <section class="card" id="nowCard"><div id="now">Loading…</div><div class="msg" id="nowMsg"></div></section>
+
+    <section class="card">
+      <h2>Actions</h2>
+      <div class="row">
+        <select id="remindSlot" aria-label="Compartment"></select>
+        <button id="remindBtn">Send reminder now</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="ghost" id="recalBtn">Box refilled: recalibrate camera</button>
+      </div>
+      <div class="muted small" id="recalStatus" style="margin-top:6px"></div>
+      <div class="msg" id="actionMsg"></div>
+    </section>
+
+    <section class="card">
+      <h2>Compartments <span class="muted small">(camera view)</span></h2>
+      <div class="boxes" id="boxes"></div>
+    </section>
+
+    <section class="card">
+      <h2>Daily schedule <span class="muted small">(times are the patient's local time)</span></h2>
+      <form class="row" id="addForm">
+        <input type="time" id="newTime" required aria-label="Time">
+        <select id="newSlot" aria-label="Compartment"></select>
+        <input type="text" id="newLabel" placeholder="Label" maxlength="60" style="flex:1 1 120px" aria-label="Label">
+        <button type="submit">Add</button>
+      </form>
+      <div class="msg" id="schedMsg"></div>
+      <div class="list" id="schedule"></div>
+    </section>
+
+    <section class="card">
+      <h2>Alerts</h2>
+      <div class="list" id="alerts"></div>
+    </section>
+
+    <section class="card">
+      <h2>History</h2>
+      <div class="list" id="history"></div>
+    </section>
+    <p class="muted small">"Removed" means the camera saw the compartment emptied; it cannot see medicine being swallowed. "Confirmed" means you marked it taken.</p>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const hhmm = (iso) => iso ? iso.slice(11, 16) : "";
+const CAT = {EXPECTED_PRESENT:"loaded",OBJECT_RETURNED:"loaded",REMOVAL_DETECTED:"removed",EMPTY:"removed",PARTIAL_OR_WRONG:"changed"};
+const WORD = {EXPECTED_PRESENT:"Loaded",OBJECT_RETURNED:"Loaded",REMOVAL_DETECTED:"Emptied",EMPTY:"Empty",PARTIAL_OR_WRONG:"Changed",UNKNOWN:"Unknown"};
+let timer = null, slotsFilled = false;
+
+async function api(path, method = "GET", body) {
+  const opts = {method, headers: {"X-MedVerify": "1"}, credentials: "same-origin"};
+  if (body !== undefined) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
+  const r = await fetch(path, opts);
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 401 && path !== "/api/care/login") { show("login"); throw new Error(j.error || "Please log in."); }
+  if (!r.ok || j.ok === false) throw new Error(j.error || r.statusText);
+  return j;
+}
+function say(id, text, ok) { const el = $(id); el.textContent = text; el.classList.toggle("ok", !!ok); if (text) setTimeout(() => { if (el.textContent === text) el.textContent = ""; }, 6000); }
+
+function show(view) {
+  for (const v of ["setupView", "noSetupView", "loginView", "appView"]) $(v).hidden = v !== view + "View";
+  $("logout").hidden = view !== "app";
+  clearInterval(timer);
+  if (view === "app") { refresh(); timer = setInterval(refresh, 5000); }
+}
+
+async function start() {
+  const s = await api("/api/care/session");
+  if (s.logged_in) show("app");
+  else if (s.setup_needed) show(s.can_setup_here ? "setup" : "noSetup");
+  else show("login");
+}
+
+// Two-tap confirmation for actions that close a dose
+function armed(btn) {
+  if (btn.classList.contains("armed")) { btn.classList.remove("armed"); return true; }
+  const label = btn.textContent; btn.classList.add("armed"); btn.textContent = "Tap again to confirm";
+  setTimeout(() => { btn.classList.remove("armed"); btn.textContent = label; }, 3500);
+  return false;
+}
+
+function render(s) {
+  const cam = s.camera;
+  const camChip = !cam.online ? ["bad", "Camera offline"] : cam.trial ? ["warn", "Camera in test mode"]
+    : cam.monitoring ? ["ok", "Camera watching"] : ["warn", "Camera not watching"];
+  setHtml("chips", `<span class="chip ${camChip[0]}">${camChip[1]}</span>` +
+    `<span class="chip ${s.device.error ? "bad" : s.device.mode === "mock" ? "warn" : "ok"}">Box: ${esc(s.device.mode)}</span>`);
+
+  if (!slotsFilled) {
+    const opts = s.compartment_ids.map((c) => `<option value="${esc(c)}">Compartment ${esc(c)}</option>`).join("");
+    $("remindSlot").innerHTML = opts; $("newSlot").innerHTML = opts; slotsFilled = true;
+  }
+
+  const now = new Date(s.now);
+  $("nowCard").classList.toggle("due", s.active.length > 0);
+  setHtml("now", s.active.length ? s.active.map((d) => {
+    const left = Math.max(0, Math.round((new Date(d.deadline) - now) / 60000));
+    return `<div class="item"><div class="big">Compartment ${esc(d.compartment_id)} is due</div>
+      <div class="muted small">${esc(d.label)} since ${esc(hhmm(d.started_at))} · ${left} min left · ${d.reminders_sent} reminder(s)${d.silenced_at ? " · sound stopped at the box" : ""}</div>
+      <div>${d.flags.map((f) => `<span class="tag">${esc(f)}</span>`).join("")}</div>
+      <div class="row" style="margin-top:8px">
+        <button data-remind="${esc(d.compartment_id)}">Remind again</button>
+        <button class="ghost" data-confirm="${esc(d.id)}">Taken (I checked by phone)</button>
+        <button class="danger" data-cancel="${esc(d.id)}">Cancel dose</button>
+      </div></div>`;
+  }).join("") : (s.upcoming[0]
+      ? `<div class="big">No dose open</div><div class="muted">Next: ${esc(s.upcoming[0].at.replace("T", " "))}, compartment ${esc(s.upcoming[0].compartment_id)} ${esc(s.upcoming[0].label)}</div>`
+      : `<div class="big">No dose open</div><div class="muted">Nothing scheduled. Add a time below.</div>`));
+
+  setHtml("boxes", s.compartment_ids.map((c) => {
+    const e = s.compartments[c] || {};
+    return `<div class="box ${CAT[e.state] || ""}"><b>${esc(c)}</b><span class="small">${esc(WORD[e.state] || e.state || "Unknown")}</span></div>`;
+  }).join(""));
+
+  const cmd = s.commands.find((c) => c.type === "recalibrate");
+  $("recalStatus").textContent = !cmd ? "" : cmd.status === "pending" ? "Waiting for the camera (keep hands out of the box)…"
+    : `Last recalibration ${cmd.status} at ${hhmm(cmd.finished_at)}${cmd.result ? ": " + cmd.result : ""}`;
+  $("recalBtn").disabled = !!cmd && cmd.status === "pending";
+
+  setHtml("schedule", s.schedule.length ? s.schedule.map((d) => `<div class="item row" style="justify-content:space-between">
+      <span><b>${esc(d.time)}</b> · ${esc(d.compartment_id)} ${esc(d.label)}</span>
+      <span class="row"><label class="small"><input type="checkbox" data-toggle="${esc(d.id)}" ${d.enabled ? "checked" : ""}> on</label>
+      <button class="ghost" data-del="${esc(d.id)}">Delete</button></span></div>`).join("")
+    : `<div class="muted">No dose times yet.</div>`);
+
+  setHtml("alerts", s.notifications.length ? s.notifications.map((n) => `<div class="item n-${esc(n.level)}">
+      <b>${esc(n.title)}</b><div class="small">${esc(n.message)}</div>
+      <div class="muted small">${esc(new Date(n.timestamp).toLocaleString())}</div></div>`).join("")
+    : `<div class="muted">No alerts yet.</div>`);
+
+  setHtml("history", s.history.length ? s.history.map((d) => `<div class="item">
+      <span class="tag ${esc(d.outcome)}">${esc(d.outcome)}</span> <b>${esc(d.compartment_id)}</b>
+      <span class="muted small">${esc((d.scheduled_for || d.started_at).replace("T", " ").slice(0, 16))}</span>
+      ${d.flags.map((f) => `<span class="tag">${esc(f)}</span>`).join("")}</div>`).join("")
+    : `<div class="muted">No finished doses yet.</div>`);
+}
+
+// Rebuild a section only when its content changed, so a half-confirmed button
+// ("Tap again to confirm") is not replaced by the 5-second refresh.
+const rendered = {};
+function setHtml(id, html) {
+  if (rendered[id] === html) return;
+  rendered[id] = html;
+  $(id).innerHTML = html;
+}
+
+async function refresh() {
+  try { render(await api("/api/care/status")); } catch (e) { if ($("appView").hidden === false) say("nowMsg", e.message); }
+}
+
+$("setupForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  if ($("setupPw").value !== $("setupPw2").value) return say("setupMsg", "The two passwords differ.");
+  try { await api("/api/care/setup", "POST", {password: $("setupPw").value}); show("app"); } catch (e) { say("setupMsg", e.message); }
+});
+$("loginForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  try { await api("/api/care/login", "POST", {password: $("loginPw").value}); $("loginPw").value = ""; show("app"); }
+  catch (e) { say("loginMsg", e.message); }
+});
+$("logout").addEventListener("click", async () => { await api("/api/care/logout", "POST", {}).catch(() => {}); show("login"); });
+
+$("remindBtn").addEventListener("click", async () => {
+  try { await api("/api/care/remind", "POST", {compartment_id: $("remindSlot").value}); say("actionMsg", "Reminder sent.", true); refresh(); }
+  catch (e) { say("actionMsg", e.message); }
+});
+$("recalBtn").addEventListener("click", async (ev) => {
+  if (!armed(ev.currentTarget)) return;
+  try { await api("/api/care/recalibrate", "POST", {}); say("actionMsg", "Sent to the camera. Keep hands out of the box.", true); refresh(); }
+  catch (e) { say("actionMsg", e.message); }
+});
+$("now").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button"); if (!b) return;
+  try {
+    if (b.dataset.remind) { await api("/api/care/remind", "POST", {compartment_id: b.dataset.remind}); say("nowMsg", "Reminder sent.", true); }
+    else if (b.dataset.confirm) { if (!armed(b)) return; await api(`/api/care/doses/${encodeURIComponent(b.dataset.confirm)}/confirm`, "POST", {}); say("nowMsg", "Marked as taken.", true); }
+    else if (b.dataset.cancel) { if (!armed(b)) return; await api(`/api/care/doses/${encodeURIComponent(b.dataset.cancel)}/cancel`, "POST", {}); say("nowMsg", "Dose cancelled.", true); }
+    refresh();
+  } catch (e) { say("nowMsg", e.message); }
+});
+$("addForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  try { await api("/api/care/schedule", "POST", {time: $("newTime").value, compartment_id: $("newSlot").value, label: $("newLabel").value});
+        $("newLabel").value = ""; refresh(); }
+  catch (e) { say("schedMsg", e.message); }
+});
+$("schedule").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button[data-del]"); if (!b || !armed(b)) return;
+  try { await api("/api/care/schedule/" + encodeURIComponent(b.dataset.del), "DELETE"); refresh(); } catch (e) { say("schedMsg", e.message); }
+});
+$("schedule").addEventListener("change", async (ev) => {
+  const id = ev.target.dataset.toggle; if (!id) return;
+  try { await api("/api/care/schedule/" + encodeURIComponent(id), "PUT", {enabled: ev.target.checked}); refresh(); } catch (e) { say("schedMsg", e.message); }
+});
+
+start().catch((e) => { $("loginView").hidden = false; say("loginMsg", e.message); });
+</script>
+</body>
+</html>

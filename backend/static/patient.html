@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MedVerify</title>
+<style>
+:root{--idle:#14324a;--due:#7a4a00;--done:#155a34;--alert:#8a1f1f;--fg:#ffffff;--soft:rgba(255,255,255,.78);
+  color-scheme:dark;font-family:system-ui,"Segoe UI","Nirmala UI","Mangal",sans-serif}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--idle);color:var(--fg);transition:background .4s}
+body.due{background:var(--due)}body.done{background:var(--done)}body.offline{background:#333}
+main{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2.5vh;
+  padding:4vh max(16px,4vw);text-align:center}
+.letter{font-size:min(38vh,60vw);font-weight:800;line-height:.9;letter-spacing:-.02em}
+.en{font-size:clamp(26px,5vw,56px);font-weight:700;line-height:1.15}
+.hi{font-size:clamp(26px,5vw,56px);font-weight:600;line-height:1.3;color:var(--soft)}
+.small{font-size:clamp(18px,2.6vw,30px);color:var(--soft)}
+.wrong{background:var(--alert);border-radius:18px;padding:2vh 4vw;font-size:clamp(24px,4vw,46px);font-weight:700}
+button{font:inherit;font-size:clamp(26px,4.5vw,50px);font-weight:700;padding:2.5vh 6vw;border-radius:24px;border:4px solid #fff;
+  background:#fff;color:#111;cursor:pointer;min-height:96px}
+button:focus-visible{outline:6px solid #ffd54a;outline-offset:6px}
+.clock{position:fixed;top:max(14px,env(safe-area-inset-top));right:max(18px,env(safe-area-inset-right));font-size:clamp(18px,2.4vw,28px);color:var(--soft)}
+.fs{position:fixed;bottom:max(12px,env(safe-area-inset-bottom));right:max(12px,env(safe-area-inset-right));font-size:14px;
+  padding:6px 10px;min-height:0;border-width:1px;background:transparent;color:var(--soft);border-color:var(--soft)}
+[hidden]{display:none!important}
+@media (prefers-reduced-motion:reduce){body{transition:none}}
+</style>
+</head>
+<body>
+<div class="clock" id="clock"></div>
+<main id="screen">
+  <div class="en">Loading…</div>
+</main>
+<button class="fs" id="fs" type="button">Full screen</button>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let lastKey = "";
+
+function render(s) {
+  document.body.className = s.mode;
+  let html = "";
+  if (s.mode === "due") {
+    const c = esc(s.compartment);
+    html = `<div class="en">Time for your medicine</div><div class="hi">दवा लेने का समय</div>
+      <div class="letter">${c}</div>
+      <div class="en">Take it from box ${c}</div><div class="hi">डिब्बे ${c} से दवा लीजिए</div>`;
+    if (s.wrong) {
+      const w = esc(s.wrong);
+      html += `<div class="wrong">Not ${w}. Please use ${c}.<br>${w} नहीं, कृपया ${c} से लीजिए।</div>`;
+    }
+    html += s.silenced
+      ? `<div class="small">Sound stopped. The light stays on until you take it.<br>आवाज़ बंद है। दवा लेने तक बत्ती जलती रहेगी।</div>`
+      : `<button id="silence" type="button">Stop sound · आवाज़ बंद करें</button>`;
+  } else if (s.mode === "done") {
+    const c = esc(s.compartment);
+    html = `<div class="letter">✓</div><div class="en">Done. Medicine taken out of box ${c}.</div>
+      <div class="hi">हो गया। डिब्बे ${c} से दवा निकाल ली गई।</div>`;
+  } else {
+    html = `<div class="en">No medicine due now</div><div class="hi">अभी कोई दवा नहीं</div>`;
+    if (s.next) {
+      const t = esc(s.next.at.slice(11, 16)), c = esc(s.next.compartment_id);
+      html += `<div class="small">Next: ${t}, box ${c}<br>अगली दवा: ${t}, डिब्बा ${c}</div>`;
+    }
+  }
+  // Re-render only when something changed, so the button is not replaced under a finger
+  const key = JSON.stringify(s);
+  if (key !== lastKey) { $("screen").innerHTML = html; lastKey = key; }
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/patient/state", {cache: "no-store"});
+    render(await r.json());
+  } catch (e) {
+    document.body.className = "offline"; lastKey = "";
+    $("screen").innerHTML = `<div class="en">Not connected</div><div class="hi">कनेक्शन नहीं है</div>
+      <div class="small">Check that MedVerify is running on this laptop.</div>`;
+  }
+}
+
+$("screen").addEventListener("click", async (ev) => {
+  if (ev.target.id !== "silence") return;
+  ev.target.disabled = true;
+  try { await fetch("/api/patient/silence", {method: "POST"}); } catch (e) {}
+  refresh();
+});
+$("fs").addEventListener("click", () => {
+  const el = document.documentElement;
+  if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
+  else if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
+});
+function tickClock() { $("clock").textContent = new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
+tickClock(); setInterval(tickClock, 15000);
+refresh(); setInterval(refresh, 2000);
+</script>
+</body>
+</html>
