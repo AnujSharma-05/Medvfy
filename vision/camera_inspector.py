@@ -1,21 +1,42 @@
-
 """MedVerify: live camera and compartment state-change inspector.
 
 Controls (click the live camera window first):
     R = define or redraw compartments A-D
-    S = save the current state as baseline
-    V = compare current state with baseline
+    S = save current state as EXPECTED medication baseline
+    E = save current state as EMPTY compartment baseline
+    V = compare current observation against baseline (once)
+    M = start/stop continuous monitoring
+    C = switch camera
     Q = quit
+
+SAFETY NOTICE:
+Visual observation of compartment emptiness is NOT proof that medicine was swallowed.
 """
 
-import csv
+from __future__ import annotations
+
 import json
+import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import cv2
 import numpy as np
-import requests
+
+from vision.comparator import VisualComparator
+from vision.event_logger import EventLogger
+from vision.frame_quality import FrameQualityAssessor
+from vision.monitor import ContinuousMonitor, MonitorConfig
+from vision.reference_store import ReferenceStore
+from vision.roi_manager import ROIManager
+from vision.state_machine import CompartmentState, CompartmentStateMachine, StateTransition
+from vision.trials import TrialRecorder
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = ROOT / "config"
@@ -23,19 +44,22 @@ DATA_DIR = ROOT / "data"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 ROI_FILE = CONFIG_DIR / "rois.json"
 BASELINE_FILE = DATA_DIR / "vision_baseline.npz"
+STATE_FILE = DATA_DIR / "vision_state.json"
 LOG_FILE = DATA_DIR / "vision_observations.csv"
 WINDOW = "MedVerify - Live Camera"
 
 
-def load_settings():
+def load_settings() -> dict[str, Any]:
     if SETTINGS_FILE.exists():
-        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        try:
+            return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
     return {}
 
 
-
-def open_camera(settings, index=None):
-    """Open the selected camera. Index 0 is usually built-in; 1 is often USB."""
+def open_camera(settings: dict[str, Any], index: int | None = None) -> cv2.VideoCapture | None:
+    """Open the selected camera using Windows DirectShow with fallback to MSMF / ANY."""
     if index is None:
         index = int(settings.get("camera_index", 0))
 
@@ -54,11 +78,12 @@ def open_camera(settings, index=None):
                 int(settings.get("camera_height", 720)),
             )
 
-            # Reject a camera that opens but cannot supply a frame.
+            # Reject a camera that opens but cannot supply a valid frame
             ok, frame = cap.read()
-            if ok and frame is not None:
+            if ok and frame is not None and frame.size > 0:
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 print(f"Camera {index} opened using backend {backend}.")
+                warm_up(cap)
                 return cap
 
         cap.release()
@@ -67,9 +92,39 @@ def open_camera(settings, index=None):
     return None
 
 
-def select_rois(frame, slots):
-    """Select all compartments. Cancellation returns safely."""
-    chosen = {}
+def warm_up(cap: Any, max_seconds: float = 3.0, min_brightness: float = 20.0, stable_frames: int = 5) -> bool:
+    """Discard frames until auto-exposure settles (several bright frames in a row).
+
+    Webcams deliver near-black frames for the first ~0.5-1 s; evaluating those would report
+    every compartment as UNCERTAIN at start-up. Returns False if exposure never settled.
+    """
+    deadline = time.monotonic() + max_seconds
+    in_a_row = 0
+    while time.monotonic() < deadline:
+        ok, frame = cap.read()
+        if ok and frame is not None and frame.size and float(np.mean(frame)) >= min_brightness:
+            in_a_row += 1
+            if in_a_row >= stable_frames:
+                return True
+        else:
+            in_a_row = 0
+    print("Camera image stayed dark during warm-up: check the lens cover and the room light.")
+    return False
+
+
+def select_rois(
+    frame: np.ndarray,
+    slots: list[str],
+    ref_store: ReferenceStore | None = None,
+    camera_index: int | None = None,
+) -> dict[str, list[int]] | None:
+    """Interactive ROI selection with cancellation safety.
+
+    ref_store must be the same store instance the caller compares against: clearing a
+    separate instance only deletes the files and leaves the caller's in-memory
+    references stale, so the next comparison would use crops from the old layout.
+    """
+    chosen: dict[str, list[int]] = {}
 
     for slot in slots:
         print(
@@ -77,180 +132,147 @@ def select_rois(frame, slots):
             "press ENTER/SPACE to accept, C to cancel."
         )
 
-        x, y, w, h = map(
-            int,
-            cv2.selectROI(
-                f"Select compartment {slot}",
-                frame,
-                showCrosshair=True,
-                fromCenter=False,
-            ),
+        box = cv2.selectROI(
+            f"Select compartment {slot}",
+            frame,
+            showCrosshair=True,
+            fromCenter=False,
         )
         cv2.destroyAllWindows()
 
+        x, y, w, h = map(int, box)
         if w <= 0 or h <= 0:
             print("Selection cancelled. Returning to live camera.")
             return None
 
         chosen[slot] = [x, y, w, h]
 
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    ROI_FILE.write_text(json.dumps(chosen, indent=2), encoding="utf-8")
+    manager = ROIManager(ROI_FILE)
+    manager.save(chosen, frame.shape, camera_index=camera_index)
 
-    # A new ROI layout invalidates the old baseline.
-    if BASELINE_FILE.exists():
-        BASELINE_FILE.unlink()
+    # Invalidate references because layout changed
+    store = ref_store if ref_store is not None else ReferenceStore(BASELINE_FILE)
+    store.clear()
 
     print(f"Saved compartment regions to {ROI_FILE}")
     return chosen
 
 
-def load_rois(slots, frame):
-    if not ROI_FILE.exists():
-        return None
-
-    try:
-        rois = json.loads(ROI_FILE.read_text(encoding="utf-8"))
-        height, width = frame.shape[:2]
-
-        for slot in slots:
-            if slot not in rois:
-                return None
-
-            x, y, w, h = map(int, rois[slot])
-
-            if (
-                x < 0 or y < 0 or w <= 0 or h <= 0
-                or x + w > width or y + h > height
-            ):
-                print("Saved regions do not fit this camera image. Press R.")
-                return None
-
-            rois[slot] = [x, y, w, h]
-
-        return rois
-
-    except (ValueError, TypeError, KeyError, OSError, json.JSONDecodeError):
-        return None
+def load_rois(slots: list[str], frame: np.ndarray) -> dict[str, list[int]] | None:
+    """Load ROIs using ROIManager with frame shape validation."""
+    manager = ROIManager(ROI_FILE)
+    return manager.load(slots, frame.shape)
 
 
-def crop_compartments(frame, rois):
-    return {
-        slot: frame[y:y + h, x:x + w].copy()
-        for slot, (x, y, w, h) in rois.items()
-    }
+def crop_compartments(
+    frame: np.ndarray, rois: dict[str, list[int]]
+) -> dict[str, np.ndarray]:
+    manager = ROIManager(ROI_FILE)
+    return manager.crop(frame, rois)
 
 
-def save_baseline(frame, rois):
+def save_baseline(
+    frame: np.ndarray, rois: dict[str, list[int]]
+) -> dict[str, np.ndarray]:
+    """Save current observation as expected baseline."""
     crops = crop_compartments(frame, rois)
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(BASELINE_FILE, **crops)
-    print("Baseline saved. Change a dummy object, then press V.")
+    store = ReferenceStore(BASELINE_FILE)
+    h, w = frame.shape[:2]
+    store.save_expected(crops, {"camera_width": w, "camera_height": h})
+    print("Expected baseline saved. Change a dummy object, then press V.")
     return crops
 
 
-def load_baseline(slots):
-    if not BASELINE_FILE.exists():
-        return {}
-
-    try:
-        with np.load(BASELINE_FILE, allow_pickle=False) as saved:
-            if not all(slot in saved.files for slot in slots):
-                return {}
-            return {slot: saved[slot].copy() for slot in slots}
-    except (ValueError, OSError):
-        return {}
+def load_baseline(slots: list[str]) -> dict[str, np.ndarray]:
+    store = ReferenceStore(BASELINE_FILE)
+    if store.has_expected(slots):
+        return {s: store.get_expected(s) for s in slots if store.get_expected(s) is not None}
+    return {}
 
 
-def changed_fraction(before, after):
-    if before.shape != after.shape:
-        after = cv2.resize(after, (before.shape[1], before.shape[0]))
-
-    before = cv2.GaussianBlur(before, (5, 5), 0)
-    after = cv2.GaussianBlur(after, (5, 5), 0)
-
-    difference = cv2.absdiff(before, after)
-    gray = cv2.cvtColor(difference, cv2.COLOR_BGR2GRAY)
-    _, mask = cv2.threshold(gray, 25, 255, cv2.THRESH_BINARY)
-    mask = cv2.morphologyEx(
-        mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)
-    )
-
-    return cv2.countNonZero(mask) / max(1, mask.size)
+def changed_fraction(before: np.ndarray, after: np.ndarray) -> float:
+    comparator = VisualComparator()
+    metrics = comparator.compare(before, after)
+    return metrics.composite_diff
 
 
-def log_observations(rows):
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    new_file = not LOG_FILE.exists()
+def log_observations(rows: list[list[Any]]) -> None:
+    logger = EventLogger(LOG_FILE)
+    logger.log_path.parent.mkdir(parents=True, exist_ok=True)
+    is_new = not logger.log_path.exists()
+    import csv
 
-    with LOG_FILE.open("a", newline="", encoding="utf-8") as file:
-        writer = csv.writer(file)
-
-        if new_file:
-            writer.writerow([
-                "timestamp_utc",
-                "compartment_id",
-                "state",
-                "changed_pixel_fraction",
-                "interpretation",
-            ])
-
+    with logger.log_path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if is_new:
+            writer.writerow(logger.CSV_HEADERS)
         writer.writerows(rows)
 
 
-def send_observation(server_url, slot, state, fraction):
-    if not server_url:
-        return
-
-    payload = {
-        "compartment_id": slot,
-        "state": state,
-        "changed_pixel_fraction": round(float(fraction), 4),
-        "note": "Visual change only; not ingestion verification.",
-    }
-
-    try:
-        response = requests.post(
-            f"{server_url.rstrip('/')}/api/observations",
-            json=payload,
-            timeout=1,
-        )
-        response.raise_for_status()
-        print(f"  Server: observation for {slot} logged")
-    except requests.RequestException:
-        print("  Server unavailable; local logging will continue.")
+def send_observation(server_url: str, slot: str, state: str, fraction: float) -> None:
+    logger = EventLogger(LOG_FILE, server_url)
+    logger.send_to_backend(slot, state, fraction, "Manual observation")
 
 
-def draw_overlay(frame, rois, latest, message):
+def draw_overlay(
+    frame: np.ndarray,
+    rois: dict[str, list[int]] | None,
+    latest: dict[str, tuple[str, float]],
+    message: str,
+    trial_labels: dict[str, str] | None = None,
+    info: str = "",
+) -> np.ndarray:
     view = frame.copy()
 
     for slot, (x, y, w, h) in (rois or {}).items():
-        state, fraction = latest.get(slot, ("READY", 0.0))
+        state_str, fraction = latest.get(slot, ("READY", 0.0))
 
-        color = (
-            (0, 0, 255) if state == "CHANGED"
-            else (0, 200, 0) if state == "NO CHANGE"
-            else (0, 200, 255)
-        )
+        if state_str in ("EXPECTED_PRESENT", "NO CHANGE"):
+            color = (0, 200, 0)
+        elif state_str in ("REMOVAL_DETECTED", "CHANGED"):
+            color = (0, 0, 255)
+        elif state_str in ("OBJECT_RETURNED",):
+            color = (255, 180, 0)
+        elif state_str in ("PARTIAL_OR_WRONG",):
+            color = (0, 140, 255)
+        elif state_str in ("UNCERTAIN", "CAMERA_ERROR"):
+            color = (0, 100, 255)
+        else:
+            color = (0, 200, 255)
 
         cv2.rectangle(view, (x, y), (x + w, y + h), color, 2)
         cv2.putText(
             view,
-            f"{slot}: {state} {fraction:.1%}",
+            f"{slot}: {state_str} ({fraction:.1%})",
             (x, max(20, y - 8)),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
+            0.50,
             color,
             2,
         )
+        if trial_labels and slot in trial_labels:
+            label = trial_labels[slot]
+            cv2.putText(
+                view,
+                f"will: {label}",
+                (x + 6, y + 22),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (255, 255, 255) if label == "unchanged" else (0, 220, 255),
+                2,
+            )
 
-    cv2.rectangle(view, (0, 0), (view.shape[1], 76), (20, 20, 20), -1)
+    # Top banner
+    banner_h = 100 if info else 76
+    cv2.rectangle(view, (0, 0), (view.shape[1], banner_h), (20, 20, 20), -1)
+    if info:
+        cv2.putText(view, info[:130], (12, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (120, 230, 255), 1)
     cv2.putText(
         view,
-        "MedVerify | R: regions  S: baseline  V: compare  Q: quit",
+        "MedVerify | R: regions  S: expected  E: empty  V: compare  M: monitor  T: trials  Q: quit",
         (12, 27),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.57,
+        0.54,
         (255, 255, 255),
         2,
     )
@@ -259,7 +281,7 @@ def draw_overlay(frame, rois, latest, message):
         message[:120],
         (12, 55),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.48,
+        0.46,
         (180, 220, 255),
         1,
     )
@@ -267,13 +289,12 @@ def draw_overlay(frame, rois, latest, message):
     return view
 
 
-def main():
+def main() -> None:
     settings = load_settings()
     slots = [
         str(slot).upper()
         for slot in settings.get("compartments", ["A", "B", "C", "D"])
     ]
-    threshold = float(settings.get("change_threshold", 0.08))
     server_url = str(settings.get("server_url", "http://127.0.0.1:5000"))
 
     camera_index = int(settings.get("camera_index", 0))
@@ -284,21 +305,108 @@ def main():
         return
 
     ok, first_frame = cap.read()
-    if not ok:
+    if not ok or first_frame is None:
         cap.release()
         print("Camera opened but no frame was available.")
         return
 
-    rois = load_rois(slots, first_frame)
-    baseline = load_baseline(slots) if rois else {}
-    latest = {}
+    roi_manager = ROIManager(ROI_FILE)
+    ref_store = ReferenceStore(BASELINE_FILE)
+    state_machine = CompartmentStateMachine(
+        debounce_frames=int(settings.get("debounce_frames", 2)),
+        state_file=STATE_FILE,
+        confirm_seconds=float(settings.get("confirm_seconds", 2.0)),
+    )
+    monitor = ContinuousMonitor(
+        slots, ref_store, state_machine, MonitorConfig.from_settings(settings)
+    )
+    logger = EventLogger(LOG_FILE, server_url)
 
-    message = f"Camera {camera_index} | R: regions C: switch S: baseline V: compare Q: quit"
+    rois = roi_manager.load(slots, first_frame.shape, camera_index=camera_index)
+    monitor.rois = rois
+    latest: dict[str, tuple[str, float]] = {}
+
+    if rois and ref_store.has_expected(slots):
+        # Show the last persisted state. A compartment never evaluated stays UNKNOWN until the
+        # camera actually looks at it: assuming "loaded" without evidence could hide an empty box.
+        for s in slots:
+            latest[s] = (state_machine.get_state(s).value, 0.0)
+
+    heartbeat_every = float(settings.get("heartbeat_seconds", 5.0))
+    last_heartbeat: float | None = None
+
+    monitoring = bool(settings.get("monitor_on_start", False)) and monitor.is_ready()
+    monitor_status = ""
+    message = f"Camera {camera_index} | R: regions S: expected E: empty V: compare M: monitor Q: quit"
+
+    # Trial mode: labelled experiments on a separate, non-persisted state machine.
+    # Nothing from a trial reaches the real state file, the observation log, or the backend.
+    recorder = TrialRecorder(DATA_DIR / "trials", slots, settings={
+        k: settings.get(k) for k in (
+            "change_threshold", "match_threshold", "debounce_frames", "confirm_seconds",
+            "monitor_interval_seconds", "settle_seconds", "motion_threshold",
+            "camera_width", "camera_height",
+        )
+    })
+    trial_mode = False
+    monitoring_before_trial = False
+    trial_info = ""
+
+    def fresh_trial_machine() -> CompartmentStateMachine:
+        sm = CompartmentStateMachine(
+            debounce_frames=int(settings.get("debounce_frames", 2)),
+            confirm_seconds=float(settings.get("confirm_seconds", 2.0)),
+        )
+        for s in slots:
+            sm.set_initial_state(s, CompartmentState.EXPECTED_PRESENT)
+        return sm
+
+    def labels_text() -> str:
+        return " ".join(f"{i + 1}:{s}={recorder.labels[s]}" for i, s in enumerate(slots))
+
+    def record(transitions: list[StateTransition], frame: np.ndarray | None = None,
+               now: float | None = None, source: str = "monitor") -> int:
+        """Update overlay state, print and log new events; returns the number of new events."""
+        for t in transitions:
+            latest[t.slot] = (t.new_state.value, float(t.metrics.get("composite_diff") or 0.0))
+        new = [t for t in transitions if t.is_new_event]
+        for t in new:
+            print(
+                f"{'[TRIAL] ' if trial_mode else ''}Compartment {t.slot}: "
+                f"{t.previous_state.value} -> {t.new_state.value} ({t.reason})"
+            )
+        if trial_mode:
+            recorder.record(frame, transitions, now if now is not None else time.monotonic(), source)
+        else:
+            logger.log_transitions(transitions)
+        return len(new)
+
+    def finish_trial(now: float) -> str:
+        summary = recorder.finish(now, {s: monitor.state_machine.get_state(s).value for s in slots})
+        lines = summary.lines()
+        print("\n".join(lines))
+        print(f"  saved to {summary.path}")
+        return lines[0]
+
+    def exit_trial_mode(now: float) -> None:
+        nonlocal trial_mode, monitoring, trial_info
+        if recorder.active:
+            finish_trial(now)
+        trial_mode = False
+        trial_info = ""
+        monitor.state_machine = state_machine
+        monitor.reset()
+        monitoring = monitoring_before_trial
+        latest.clear()
+        for s in slots:
+            latest[s] = (state_machine.get_state(s).value, 0.0)
 
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     print("\nMedVerify camera inspector")
     print("R = define regions | C = switch camera")
-    print("S = save baseline | V = compare | Q = quit")
+    print("S = save EXPECTED baseline | E = save EMPTY baseline")
+    print("V = compare once | M = start/stop continuous monitoring | Q = quit")
+    print("T = trial mode: 1-4 label compartments, N start trial, F finish trial")
 
     try:
         while True:
@@ -308,22 +416,118 @@ def main():
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
                     break
-                if key == ord("c"):
-                    pass
-                else:
-                    continue
-            else:
-                view = draw_overlay(frame, rois, latest, message)
-                cv2.imshow(WINDOW, view)
-                key = cv2.waitKey(1) & 0xFF
+                continue
 
-            key = chr(key).lower() if key != 255 else ""
+            now = time.monotonic()
+            if last_heartbeat is None or now - last_heartbeat >= heartbeat_every:
+                # Liveness + state snapshot: lets the backend notice a dead camera and
+                # recover any observation whose POST was lost.
+                last_heartbeat = now
+                logger.send_heartbeat({
+                    # During trials the real doses are NOT being watched: say so, send no states.
+                    "monitoring": monitoring and not trial_mode,
+                    "trial": trial_mode,
+                    "camera_index": camera_index,
+                    "states": {} if trial_mode else {s: state_machine.get_state(s).value for s in slots},
+                })
+
+            if monitoring:
+                tick = monitor.process(frame, now)
+                q = monitor.last_quality
+                sharp = (f" sharp {q.blur_score:.0f}/{monitor.blur_limit():.0f}"
+                         f"{' DARK' if q.is_underexposed else ''}" if q is not None else "")
+                monitor_status = (f"[{'TRIAL' if trial_mode else 'MONITOR'} {tick.status} "
+                                  f"motion {tick.motion:.1%}{sharp}] ")
+                if tick.transitions and record(tick.transitions, frame, now):
+                    message = ", ".join(
+                        f"{t.slot}: {t.new_state.value}" for t in tick.new_events
+                    )
+            else:
+                monitor_status = ""
+
+            if trial_mode:
+                if not recorder.active:
+                    trial_info = f"TRIAL MODE | {labels_text()} | 1-4: label  N: start  T: exit"
+                elif not recorder.ready:
+                    trial_info = "TRIAL: hands off, checking the box matches calibration..."
+                elif recorder.start_mismatch_slots:
+                    trial_info = (f"TRIAL: {', '.join(recorder.start_mismatch_slots)} does not match calibration. "
+                                  "Fix the box and press N to restart.")
+                else:
+                    trial_info = (f"TRIAL: GO - do it now. {recorder.elapsed(now):.0f}s, "
+                                  f"{recorder.evaluations} checks. Wait for states to settle, then F")
+            view = draw_overlay(frame, rois, latest, monitor_status + message,
+                                trial_labels=recorder.labels if trial_mode else None, info=trial_info)
+            cv2.imshow(WINDOW, view)
+            raw_key = cv2.waitKey(1) & 0xFF
+            key = chr(raw_key).lower() if raw_key != 255 else ""
+
+            if trial_mode and key in ("r", "c"):
+                # Regions or camera are about to change: trials must not span that.
+                exit_trial_mode(now)
+                print("Left trial mode.")
 
             if key == "q":
                 break
 
+            elif key == "t":
+                if trial_mode:
+                    exit_trial_mode(now)
+                    message = "Left trial mode; real monitoring state restored."
+                elif not monitor.is_ready():
+                    message = "Trials need regions (R) and an expected baseline (S); an empty one (E) too."
+                else:
+                    trial_mode = True
+                    monitoring_before_trial = monitoring
+                    monitoring = True
+                    monitor.state_machine = fresh_trial_machine()
+                    monitor.reset()
+                    latest.clear()
+                    for s in slots:
+                        latest[s] = (CompartmentState.EXPECTED_PRESENT.value, 0.0)
+                    message = "Trial mode: set labels with 1-4, put the box as calibrated, press N."
+                    if not ref_store.has_empty(slots):
+                        message += " No empty reference yet: press E with the box empty first."
+                print(message)
+
+            elif trial_mode and key in tuple(str(i + 1) for i in range(len(slots))):
+                if recorder.active:
+                    message = "Labels are locked while a trial runs. Press F first."
+                else:
+                    slot = slots[int(key) - 1]
+                    message = f"{slot} will be {recorder.cycle_label(slot)}."
+
+            elif trial_mode and key == "n":
+                if recorder.active:
+                    message = finish_trial(now)
+                monitor.state_machine = fresh_trial_machine()
+                monitor.reset()
+                latest.clear()
+                for s in slots:
+                    latest[s] = (CompartmentState.EXPECTED_PRESENT.value, 0.0)
+                trial_id = recorder.start(now, rois, ref_store, camera_index)
+                message = "Trial started. Keep hands away until the banner says GO."
+                print(f"[TRIAL] started {trial_id}: {labels_text()}")
+
+            elif trial_mode and key == "f":
+                message = finish_trial(now) if recorder.active else "No trial running. Press N to start one."
+
+            elif key == "m" and trial_mode:
+                message = "Monitoring is always on in trial mode. Press T to leave."
+
+            elif key == "m":
+                if monitoring:
+                    monitoring = False
+                    message = "Continuous monitoring stopped."
+                elif not monitor.is_ready():
+                    message = "Monitoring needs regions (R) and an expected baseline (S)."
+                else:
+                    monitor.reset()
+                    monitoring = True
+                    message = "Continuous monitoring started."
+                print(message)
+
             elif key == "c":
-                # Try the next few device indexes, cycling through 0-4.
                 old_index = camera_index
                 cap.release()
                 cv2.waitKey(200)
@@ -346,37 +550,36 @@ def main():
 
                 camera_index, cap = found
                 rois = None
-                baseline = {}
+                monitor.rois = None
+                monitor.reset()
+                monitoring = False
+                ref_store.clear()
+                state_machine.clear_state()
                 latest = {}
                 message = (
                     f"Switched to camera {camera_index}. "
                     "Press R to redraw compartment regions."
                 )
-
-                # Camera view has changed, so discard the old camera's
-                # region selection and baseline.
-                for path in (ROI_FILE, BASELINE_FILE):
-                    try:
-                        path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-
                 print(f"Switched from camera {old_index} to {camera_index}.")
-                print("Redraw your regions using R.")
                 continue
 
             elif key == "r":
-                ok, frame = cap.read()
-                if not ok:
+                ok, f = cap.read()
+                if not ok or f is None:
                     message = "Cannot select regions: frame unavailable."
                     continue
 
-                new_rois = select_rois(frame.copy(), slots)
+                new_rois = select_rois(
+                    f.copy(), slots, ref_store=ref_store, camera_index=camera_index
+                )
                 if new_rois is not None:
                     rois = new_rois
-                    baseline = {}
+                    monitor.rois = rois
+                    monitor.reset()
+                    monitoring = False
+                    state_machine.clear_state()
                     latest = {}
-                    message = "Regions saved. Arrange dummy objects, then press S."
+                    message = "Regions saved; references cleared. Arrange expected medication, then press S."
                 else:
                     message = "Selection cancelled; live feed continues."
 
@@ -385,58 +588,77 @@ def main():
                     message = "Press R to define all compartment regions first."
                     continue
 
-                baseline = save_baseline(frame, rois)
-                latest = {s: ("BASELINE SAVED", 0.0) for s in slots}
-                message = "Baseline saved. Change a dummy object, then press V."
+                crops = roi_manager.crop(frame, rois)
+                h, w = frame.shape[:2]
+                sharpness = FrameQualityAssessor().compute_blur_score(frame)
+                ref_store.save_expected(
+                    crops,
+                    {"camera_index": camera_index, "camera_width": w, "camera_height": h,
+                     # Blur is judged relative to this: see MonitorConfig.blur_min_ratio
+                     "calibration_sharpness": round(sharpness, 2)},
+                )
+                print(f"Calibration sharpness {sharpness:.1f}; frames below "
+                      f"{sharpness * monitor.config.blur_min_ratio:.1f} will count as blurry.")
+                for s in slots:
+                    state_machine.set_initial_state(s, CompartmentState.EXPECTED_PRESENT)
+                    latest[s] = (CompartmentState.EXPECTED_PRESENT.value, 0.0)
+                monitor.reset()
+                message = "Expected baseline saved. Press M to monitor, or V to compare once."
+                print("Saved expected baseline.")
+
+            elif key == "e":
+                if not rois:
+                    message = "Press R to define all compartment regions first."
+                    continue
+
+                crops = roi_manager.crop(frame, rois)
+                h, w = frame.shape[:2]
+                ref_store.save_empty(
+                    crops,
+                    {"camera_index": camera_index, "camera_width": w, "camera_height": h},
+                )
+                monitor.reset()
+                message = "Empty compartment baseline saved."
+                print("Saved empty compartment baseline.")
 
             elif key == "v":
                 if not rois:
                     message = "Press R to define compartment regions first."
                     continue
 
-                if not all(s in baseline for s in slots):
-                    message = "No baseline. Place the objects and press S."
+                if not ref_store.has_expected(slots):
+                    message = "No expected baseline. Arrange medication and press S."
                     continue
 
-                current = crop_compartments(frame, rois)
-                rows = []
-                changed_count = 0
-                timestamp = datetime.now(timezone.utc).isoformat(
-                    timespec="seconds"
+                # Manual compare is an explicit request, so it bypasses the stability gate.
+                transitions = monitor.evaluate(frame)
+                new_events = record(transitions, frame, time.monotonic(), "manual")
+                changed_count = sum(
+                    1 for t in transitions if t.new_state != CompartmentState.EXPECTED_PRESENT
                 )
 
-                for slot in slots:
-                    fraction = changed_fraction(baseline[slot], current[slot])
-                    state = "CHANGED" if fraction >= threshold else "NO CHANGE"
-                    latest[slot] = (state, fraction)
-                    changed_count += state == "CHANGED"
-
-                    rows.append([
-                        timestamp,
-                        slot,
-                        state,
-                        round(fraction, 4),
-                        "Visual change only; not proof of dose removal or ingestion",
-                    ])
-
-                    print(
-                        f"Compartment {slot}: {state} "
-                        f"(changed pixels: {fraction:.1%})"
-                    )
-                    send_observation(server_url, slot, state, fraction)
-
-                log_observations(rows)
-                baseline = current
-                np.savez_compressed(BASELINE_FILE, **baseline)
+                # CRITICAL: Do NOT overwrite ref_store.expected!
+                # Baseline is preserved immutably.
                 message = (
                     f"Compared {len(slots)} compartments; "
-                    f"{changed_count} changed. Baseline updated."
+                    f"{changed_count} changed, {new_events} new event(s) logged. "
+                    "(Expected baseline preserved)"
                 )
 
     finally:
+        if recorder.active:
+            finish_trial(time.monotonic())  # Keep the data of a trial interrupted by Q
         cap.release()
         cv2.destroyAllWindows()
-
+        # Give queued backend deliveries a bounded chance to finish; the CSV already has them.
+        if not logger.close(timeout=2.0):
+            print("Some observations were not delivered to the backend before exit (kept in local CSV).")
+        if logger.failed_count or logger.dropped_count:
+            print(
+                f"Backend delivery: {logger.delivered_count} sent, "
+                f"{logger.failed_count} failed, {logger.dropped_count} dropped. "
+                f"Last error: {logger.last_delivery_error}"
+            )
 
 if __name__ == "__main__":
     main()
