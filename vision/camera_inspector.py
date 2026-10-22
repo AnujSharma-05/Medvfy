@@ -33,20 +33,38 @@ def load_settings():
     return {}
 
 
-def open_camera(settings):
-    index = int(settings.get("camera_index", 0))
 
-    # Windows camera backend first, then OpenCV default.
-    cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-    if not cap.isOpened():
+def open_camera(settings, index=None):
+    """Open the selected camera. Index 0 is usually built-in; 1 is often USB."""
+    if index is None:
+        index = int(settings.get("camera_index", 0))
+
+    index = int(index)
+    backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
+
+    for backend in backends:
+        cap = cv2.VideoCapture(index, backend)
+        if cap.isOpened():
+            cap.set(
+                cv2.CAP_PROP_FRAME_WIDTH,
+                int(settings.get("camera_width", 1280)),
+            )
+            cap.set(
+                cv2.CAP_PROP_FRAME_HEIGHT,
+                int(settings.get("camera_height", 720)),
+            )
+
+            # Reject a camera that opens but cannot supply a frame.
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                print(f"Camera {index} opened using backend {backend}.")
+                return cap
+
         cap.release()
-        cap = cv2.VideoCapture(index)
 
-    if cap.isOpened():
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-
-    return cap
+    print(f"Could not open camera index {index}.")
+    return None
 
 
 def select_rois(frame, slots):
@@ -258,99 +276,138 @@ def main():
     threshold = float(settings.get("change_threshold", 0.08))
     server_url = str(settings.get("server_url", "http://127.0.0.1:5000"))
 
-    cap = open_camera(settings)
+    camera_index = int(settings.get("camera_index", 0))
+    cap = open_camera(settings, camera_index)
 
-    if not cap.isOpened():
-        cap.release()
-        print("ERROR: Camera could not open.")
-        print("Close other camera apps or set camera_index to 1 in settings.json.")
+    if cap is None:
+        print("Connect a camera or change camera_index in config/settings.json.")
         return
 
-    # Start live preview before asking for compartment selection.
     ok, first_frame = cap.read()
-
     if not ok:
         cap.release()
-        print("ERROR: Camera opened, but no image was received.")
+        print("Camera opened but no frame was available.")
         return
 
     rois = load_rois(slots, first_frame)
     baseline = load_baseline(slots) if rois else {}
     latest = {}
 
-    message = "Live feed active. Point at your compartment layout and press R."
+    message = f"Camera {camera_index} | R: regions C: switch S: baseline V: compare Q: quit"
 
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
-
-    print("\nMedVerify camera inspector started.")
-    print("Click the live window before using keyboard controls.")
-    print("R = select regions | S = save baseline | V = compare | Q = quit\n")
+    print("\nMedVerify camera inspector")
+    print("R = define regions | C = switch camera")
+    print("S = save baseline | V = compare | Q = quit")
 
     try:
         while True:
             ok, frame = cap.read()
+            if not ok or frame is None:
+                message = "Frame read failed. Press C to try another camera."
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q"):
+                    break
+                if key == ord("c"):
+                    pass
+                else:
+                    continue
+            else:
+                view = draw_overlay(frame, rois, latest, message)
+                cv2.imshow(WINDOW, view)
+                key = cv2.waitKey(1) & 0xFF
 
-            if not ok:
-                print("Camera frame read failed.")
-                break
-
-            view = draw_overlay(frame, rois, latest, message)
-            cv2.imshow(WINDOW, view)
-
-            key = cv2.waitKey(1) & 0xFF
             key = chr(key).lower() if key != 255 else ""
 
             if key == "q":
-                print("Closing camera inspector.")
                 break
 
-            elif key == "r":
-                # Selection deliberately uses a frozen frame.
-                new_rois = select_rois(frame.copy(), slots)
+            elif key == "c":
+                # Try the next few device indexes, cycling through 0-4.
+                old_index = camera_index
+                cap.release()
+                cv2.waitKey(200)
 
+                found = None
+                for offset in range(1, 6):
+                    candidate = (old_index + offset) % 5
+                    trial = open_camera(settings, candidate)
+                    if trial is not None:
+                        found = (candidate, trial)
+                        break
+
+                if found is None:
+                    cap = open_camera(settings, old_index)
+                    if cap is None:
+                        print("No camera could be reopened.")
+                        break
+                    message = "Could not switch camera; restored previous camera if available."
+                    continue
+
+                camera_index, cap = found
+                rois = None
+                baseline = {}
+                latest = {}
+                message = (
+                    f"Switched to camera {camera_index}. "
+                    "Press R to redraw compartment regions."
+                )
+
+                # Camera view has changed, so discard the old camera's
+                # region selection and baseline.
+                for path in (ROI_FILE, BASELINE_FILE):
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
+                print(f"Switched from camera {old_index} to {camera_index}.")
+                print("Redraw your regions using R.")
+                continue
+
+            elif key == "r":
+                ok, frame = cap.read()
+                if not ok:
+                    message = "Cannot select regions: frame unavailable."
+                    continue
+
+                new_rois = select_rois(frame.copy(), slots)
                 if new_rois is not None:
                     rois = new_rois
                     baseline = {}
                     latest = {}
-                    message = "Regions saved. Arrange dummy objects and press S."
+                    message = "Regions saved. Arrange dummy objects, then press S."
                 else:
-                    message = "Selection cancelled. Live feed continues; press R to retry."
+                    message = "Selection cancelled; live feed continues."
 
             elif key == "s":
                 if not rois:
-                    message = "Define the compartments first using R."
+                    message = "Press R to define all compartment regions first."
                     continue
 
                 baseline = save_baseline(frame, rois)
-                latest = {
-                    slot: ("BASELINE SAVED", 0.0) for slot in slots
-                }
-                message = "Baseline saved. Change an object, then press V."
+                latest = {s: ("BASELINE SAVED", 0.0) for s in slots}
+                message = "Baseline saved. Change a dummy object, then press V."
 
             elif key == "v":
                 if not rois:
-                    message = "Define the compartments first using R."
+                    message = "Press R to define compartment regions first."
                     continue
 
-                if not all(slot in baseline for slot in slots):
-                    message = "No baseline available. Arrange objects and press S first."
+                if not all(s in baseline for s in slots):
+                    message = "No baseline. Place the objects and press S."
                     continue
 
                 current = crop_compartments(frame, rois)
+                rows = []
+                changed_count = 0
                 timestamp = datetime.now(timezone.utc).isoformat(
                     timespec="seconds"
                 )
-                rows = []
-                changed_count = 0
 
                 for slot in slots:
-                    fraction = changed_fraction(
-                        baseline[slot], current[slot]
-                    )
-                    state = (
-                        "CHANGED" if fraction >= threshold else "NO CHANGE"
-                    )
-
+                    fraction = changed_fraction(baseline[slot], current[slot])
+                    state = "CHANGED" if fraction >= threshold else "NO CHANGE"
                     latest[slot] = (state, fraction)
                     changed_count += state == "CHANGED"
 
@@ -369,16 +426,12 @@ def main():
                     send_observation(server_url, slot, state, fraction)
 
                 log_observations(rows)
-
-                # Next comparison uses this image as the new reference.
                 baseline = current
                 np.savez_compressed(BASELINE_FILE, **baseline)
-
                 message = (
-                    f"Comparison complete: {changed_count}/{len(slots)} "
-                    "compartments changed. Baseline updated."
+                    f"Compared {len(slots)} compartments; "
+                    f"{changed_count} changed. Baseline updated."
                 )
-                print(message)
 
     finally:
         cap.release()
