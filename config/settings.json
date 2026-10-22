@@ -1,0 +1,10 @@
+{
+  "compartments": ["A", "B", "C", "D"],
+  "camera_index": 0,
+  "camera_width": 1280,
+  "camera_height": 720,
+  "change_threshold": 0.08,
+  "server_url": "http://127.0.0.1:5000",
+  "device_mode": "mock",
+  "esp32_base_url": "http://192.168.4.1"
+}
