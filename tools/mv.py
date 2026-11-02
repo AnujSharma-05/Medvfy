@@ -10,9 +10,10 @@
     .\\mv box light A            light one compartment (no dose)
 
     .\\mv cam snapshot           save the current camera image (raw + annotated)
-    .\\mv cam regions preview    numbered groups the camera can find (with colours); changes nothing
+    .\\mv cam regions preview    numbered pen-drawn squares the camera can find (or, with none drawn,
+                                medicine groups), with their contents' colour; changes nothing
     .\\mv cam regions auto [A=1 B=3 C=2 D=4]   use them; letters follow the preview numbers if given,
-                                otherwise the 4 largest groups in reading order
+                                otherwise reading order (top row left to right, then the next row)
     .\\mv cam regions set A=x,y,w,h B=... C=... D=...
     .\\mv cam empty              sheet cleared: save the "empty" photos
     .\\mv cam loaded [A=7 B=7 C=4 D=4]   sheet loaded: save the "loaded" photos and start monitoring;
@@ -223,8 +224,8 @@ def cmd_up(args: list[str]) -> None:
         # reports pause, and starting a second camera service would fight it for the webcam.
         if _managed_pid("camera"):
             print(f"Camera service already running (pid {_managed_pid('camera')}).")
-        elif camera_running(api("GET", "/api/status")) or any(
-                "camera_service" in c or "camera_inspector" in c for _, c in _foreign_processes()):
+        elif any("camera_service" in c or "camera_inspector" in c for _, c in _foreign_processes()):
+            # Judged by processes only: a camera stopped seconds ago still has a fresh report.
             print("A camera program started outside mv is running; leaving it alone.")
         else:
             print("Starting camera service: the webcam will be on and watching the sheet continuously.")
@@ -311,6 +312,8 @@ def cmd_status(args: list[str]) -> None:
               f"loaded photo {'yes' if det.get('has_loaded_photo') else 'NO'}, "
               f"empty photo {'yes' if det.get('has_empty_photo') else 'NO'}"
               + (f", waiting for still scene to {det['waiting_for']}" if det.get("waiting_for") else ""))
+        if det.get("view_blocked"):
+            print(f"           view blocked (something on the box edge): {', '.join(det['view_blocked'])}")
         trial = det.get("trial")
         if trial:
             stage = "GO (act now)" if trial["ready"] else "checking start, hands off"

@@ -162,6 +162,9 @@ class TestContinuousMonitor(unittest.TestCase):
         threshold of 60, so every evaluation was UNCERTAIN. Judge blur against calibration."""
         soft_bg = np.random.default_rng(3).integers(88, 96, (200, 200, 3), dtype=np.uint8)
         soft = cv2.GaussianBlur(soft_bg, (3, 3), 0)  # low-texture but in-focus scene
+        # This test is about blur. Its "loaded" photo comes from a different scene than the
+        # empty photo saved in setUp, which area evidence would rightly read as a blocked view.
+        self.monitor.config.evidence = "pixels"
         self.assertLess(self.monitor.assessor.compute_blur_score(soft), 60)
         crop = lambda f: {s: f[y : y + h, x : x + w].copy() for s, (x, y, w, h) in ROIS.items()}
         self.store.save_expected(crop(soft))

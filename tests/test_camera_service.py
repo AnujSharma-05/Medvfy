@@ -84,6 +84,28 @@ class TestAutoRegions(unittest.TestCase):
         self.assertTrue(60 <= hue("C") <= 95, hue("C"))    # green/teal
         self.assertTrue(120 <= hue("D") <= 150, hue("D"))  # purple
 
+    @staticmethod
+    def _sheet(gap):
+        """Four coloured groups on white paper; the two bottom groups `gap` px apart."""
+        img = np.full((480, 640, 3), 225, np.uint8)
+        for (x, y), color in (((80, 80), (200, 60, 60)), ((420, 80), (60, 60, 200)),
+                              ((80, 300), (60, 160, 60)), ((80 + 120 + gap, 300), (160, 60, 160))):
+            cv2.rectangle(img, (x, y), (x + 120, y + 100), color, -1)
+        return img
+
+    def test_overlapping_margins_are_split_between_close_groups(self):
+        rois = find_regions(self._sheet(40), SLOTS)  # 40 px apart: 30 px margins would collide
+        c, d = rois["C"], rois["D"]
+        self.assertLessEqual(c[0] + c[2], d[0])  # no overlap
+        self.assertGreaterEqual(c[0] + c[2], 200 + 10)  # C still keeps paper beyond its objects
+        self.assertLessEqual(d[0], 240 - 10)
+
+    def test_groups_too_close_are_still_refused(self):
+        # 10 px apart: the two groups merge into one and the layout is refused, not guessed.
+        with self.assertRaises(RegionsNotFound) as ctx:
+            find_regions(self._sheet(10), SLOTS)
+        self.assertIn("Found 3 group(s)", str(ctx.exception))
+
     def test_missing_group_is_reported_not_guessed(self):
         rois = find_regions(LOADED, SLOTS)
         with self.assertRaises(RegionsNotFound) as ctx:
@@ -209,6 +231,90 @@ class TestCountedPipeline(unittest.TestCase):
         self.spots = list(reversed(self.spots))
         self.feed(self.frame({"A": 4, "B": 5, "C": 5, "D": 5}), 5.0)
         self.assertEqual(getattr(self.logger, "count_changes", []), [("A", 5, 4)])
+
+    def calibrate_counts(self):
+        full = self.frame({s: 5 for s in SLOTS})
+        self.assertTrue(self.send("set_regions", {"rois": self.rois}, full)["ok"])
+        self.assertTrue(self.send("save_empty", frame=self.paper)["ok"])
+        self.assertTrue(self.send("recalibrate", {"counts": {s: 5 for s in SLOTS}}, full)["ok"])
+        return full
+
+    def test_hand_held_still_over_a_compartment_is_not_counted(self):
+        full = self.calibrate_counts()
+        hand = full.copy()
+        rx, ry = self.rois["A"][:2]
+        # A skin-coloured hand reaching in over A's left edge, covering two strips, held still
+        cv2.rectangle(hand, (rx - 15, ry + 5), (rx + 120, ry + 90), (120, 160, 210), -1)
+        self.feed(hand, 5.0)
+        self.assertEqual(getattr(self.logger, "count_changes", []), [])
+        self.assertIn("A", self.logger.heartbeats[-1]["details"]["view_blocked"])
+        self.assertEqual(self.logger.heartbeats[-1]["counts"]["A"], 5)
+        self.feed(full, 4.0)  # hand gone
+        self.assertEqual(getattr(self.logger, "count_changes", []), [])
+        self.assertEqual(self.logger.heartbeats[-1]["details"]["view_blocked"], [])
+
+    def test_calibration_refused_when_a_piece_crosses_its_box(self):
+        full = self.frame({s: 5 for s in SLOTS})
+        self.assertTrue(self.send("set_regions", {"rois": self.rois}, full)["ok"])
+        self.assertTrue(self.send("save_empty", frame=self.paper)["ok"])
+        sticking_out = full.copy()
+        h, w = self.mask.shape
+        bx, by = self.rois["B"][0] - 30, self.rois["B"][1] + 120  # half outside B's left edge
+        patch = sticking_out[by:by + h, bx:bx + w]
+        patch[self.mask] = self.strip[self.mask]
+        r = self.send("recalibrate", {"counts": {s: 5 for s in SLOTS}}, sticking_out)
+        self.assertFalse(r["ok"])
+        self.assertIn("B", r["message"])
+        self.assertIn("edge", r["message"])
+
+    def test_regions_redrawn_without_clearing_the_sheet_again(self):
+        full = self.frame({s: 5 for s in SLOTS})
+        self.assertTrue(self.send("set_regions", {"rois": self.rois}, full)["ok"])
+        self.assertTrue(self.send("save_empty", frame=self.paper)["ok"])
+        # Pieces end up elsewhere: new boxes, same camera. The empty photo is re-cut, not lost.
+        moved_rois = {s: [x + 10, y + 5, w - 20, h - 10] for s, (x, y, w, h) in self.rois.items()}
+        r = self.send("set_regions", {"rois": moved_rois}, full)
+        self.assertTrue(r["data"]["empty_reused"], r)
+        self.assertTrue(self.logger.heartbeats[-1]["details"]["has_empty_photo"])
+        self.rois = moved_rois
+        self.spots = [(10, 10), (90, 10), (170, 10), (10, 105), (90, 105)]  # inside the new boxes
+        r = self.send("recalibrate", {"counts": {s: 5 for s in SLOTS}}, self.frame({s: 5 for s in SLOTS}))
+        self.assertTrue(r["ok"], r)
+
+    def test_drawn_sheet_that_slid_keeps_its_empty_photo(self):
+        """Regression: the paper slid ~10 px while pieces were put in; calibration then saw the pen
+        lines on the box edges and refused. The empty photo now follows the drawn grid."""
+        from test_drawn_regions import drawn_sheet
+        empty = drawn_sheet(empty_cell="all")
+        self.assertTrue(self.send("set_regions", {"auto": True}, empty)["ok"])
+        self.assertTrue(self.send("save_empty", frame=empty)["ok"])
+        slid = np.roll(drawn_sheet(empty_cell=None), (10, -5), axis=(0, 1))
+        r = self.send("set_regions", {"auto": True}, slid)
+        self.assertTrue(r["data"]["empty_reused"], r)
+        r = self.send("recalibrate", {"counts": {s: 1 for s in SLOTS}}, slid)
+        self.assertTrue(r["ok"], r)
+
+    def test_real_scattered_pieces_calibrate_and_count(self):
+        """The real taped sheet: 4 pieces per square, lying anywhere, some against the line."""
+        empty = cv2.imread(str(Path(__file__).parent / "fixtures" / "grid_taped_empty.png"))
+        loaded = cv2.imread(str(Path(__file__).parent / "fixtures" / "grid_taped_loaded.jpg"))
+        self.assertTrue(self.send("set_regions", {"auto": True}, empty)["ok"])
+        self.assertTrue(self.send("save_empty", frame=empty)["ok"])
+        r = self.send("recalibrate", {"counts": {s: 4 for s in SLOTS}}, loaded)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["data"]["loaded_counts"], {s: 4 for s in SLOTS})
+        self.feed(loaded, 4.0)
+        self.assertEqual(self.svc.monitor.counts(), {s: 4 for s in SLOTS})
+        self.assertEqual(self.logger.heartbeats[-1]["details"]["view_blocked"], [])
+
+    def test_empty_photo_not_reused_after_the_camera_moved(self):
+        full = self.frame({s: 5 for s in SLOTS})
+        self.send("set_regions", {"rois": self.rois}, full)
+        self.send("save_empty", frame=self.paper)
+        other_view = cv2.resize(LOADED, (640, 480))  # the camera now sees a different scene
+        r = self.send("set_regions", {"rois": self.rois}, other_view)
+        self.assertFalse(r["data"]["empty_reused"])
+        self.assertFalse(self.logger.heartbeats[-1]["details"]["has_empty_photo"])
 
     def test_bad_counts_rejected(self):
         self.send("set_regions", {"rois": self.rois})

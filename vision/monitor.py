@@ -25,7 +25,7 @@ import cv2
 import numpy as np
 
 from vision.comparator import VisualComparator
-from vision.content import CountTracker, medicine_mask
+from vision.content import CountTracker, crosses_edge, crosses_line, inside_mask, intrusion_mask, medicine_mask
 from vision.frame_quality import FrameQualityAssessor
 from vision.reference_store import ReferenceStore
 from vision.state_machine import CompartmentStateMachine, StateTransition
@@ -122,6 +122,31 @@ class ContinuousMonitor:
         self._ref_stats: dict[str, dict[str, Any]] = {}
         self.counters: dict[str, CountTracker] = {}
         self.last_count_changes: list[tuple[str, int, int]] = []
+        self.last_blocked: set[str] = set()
+        self.inside: dict[str, np.ndarray] = {}  # drawn compartments: mask of the square in its crop
+
+    def set_outlines(self, outlines: dict[str, list[list[int]]] | None) -> None:
+        """Drawn compartments: only what lies inside each square counts, and the guard looks for
+        things crossing the pen line. Without outlines, the whole box counts (plain regions)."""
+        self.inside = {s: inside_mask(self.rois[s], pts) for s, pts in (outlines or {}).items()
+                       if self.rois and s in self.rois}
+        self._ref_key = object()  # recompute the per-compartment reference areas
+
+    def medicine(self, slot: str, crop: np.ndarray, empty: np.ndarray | None) -> np.ndarray:
+        """Medicine mask of a compartment crop, limited to its drawn square when it has one."""
+        mask = medicine_mask(crop, empty)
+        inside = self.inside.get(slot)
+        if inside is not None and inside.shape == mask.shape:
+            mask = cv2.bitwise_and(mask, inside)
+        return mask
+
+    def view_blocked(self, slot: str, crop: np.ndarray, empty: np.ndarray | None) -> bool:
+        """Something reaching into the compartment (a hand held still, a sleeve)."""
+        intrusion = intrusion_mask(crop, empty)
+        inside = self.inside.get(slot)
+        if inside is not None and inside.shape == intrusion.shape:
+            return crosses_line(intrusion, inside)
+        return crosses_edge(intrusion)
 
     def reset(self) -> None:
         """Forget timing and motion history (call after calibration, ROI, or camera changes)."""
@@ -224,7 +249,7 @@ class ContinuousMonitor:
             exp, emp = self.ref_store.get_expected(slot), self.ref_store.get_empty(slot)
             if exp is None or emp is None or exp.shape != emp.shape:
                 continue
-            mask = medicine_mask(exp, emp)
+            mask = self.medicine(slot, exp, emp)
             area = int(np.count_nonzero(mask))
             n = int(counts.get(slot) or 0)
             stats[slot] = {"area": area, "color": _mean_color(exp, mask), "count": n or None,
@@ -267,6 +292,7 @@ class ContinuousMonitor:
         stats = self.reference_stats() if self.config.evidence != "pixels" else {}
         now = observed_at if observed_at is not None else 0.0
         self.last_count_changes = []
+        self.last_blocked = set()
 
         transitions: list[StateTransition] = []
         for slot in self.slots:
@@ -279,11 +305,17 @@ class ContinuousMonitor:
             extra: dict[str, Any] = {"quality": quality.reason, "is_blurry": is_blurry,
                                      "blur_score": quality.blur_score, "brightness": quality.brightness_score}
             ref = stats.get(slot)
+            slot_blocked = False
 
             if (ref and ref["area"] > 0 and not evidence_missing and empty_crop is not None
                     and current_crop.shape == empty_crop.shape):
                 # Content evidence: how much medicine, and is it the same colour as calibrated.
-                mask = medicine_mask(current_crop, empty_crop)
+                mask = self.medicine(slot, current_crop, empty_crop)
+                # Something crossing the compartment's border (a hand held still, a sleeve): the
+                # view of this compartment is blocked, so no count or decision is taken from it.
+                if self.view_blocked(slot, current_crop, empty_crop):
+                    slot_blocked = True
+                    self.last_blocked.add(slot)
                 area = int(np.count_nonzero(mask))
                 ratio = area / ref["area"]
                 shift = 0.0
@@ -294,12 +326,12 @@ class ContinuousMonitor:
                 match_t, change_t = self.config.content_match_threshold, self.config.content_change_threshold
                 extra.update({"composite_diff": round(diff_expected, 4), "area": area,
                               "area_ratio": round(ratio, 3), "color_shift": round(shift, 1),
-                              "evidence": "content"})
+                              "evidence": "content", "edge_blocked": slot_blocked})
                 counter = self.counters.get(slot)
                 if counter is not None:
                     estimate = area / ref["unit"]
                     extra["count_estimate"] = round(estimate, 2)
-                    change = counter.update(None if is_blurry else estimate, now)
+                    change = counter.update(None if (is_blurry or slot_blocked) else estimate, now)
                     if change is not None:
                         self.last_count_changes.append((slot, change[0], change[1]))
             else:
@@ -320,6 +352,7 @@ class ContinuousMonitor:
                     diff_from_expected=diff_expected,
                     diff_from_empty=diff_empty,
                     is_blurry=is_blurry,
+                    is_occluded=slot_blocked,
                     change_threshold=change_t,
                     match_threshold=match_t,
                     extra_metrics=extra,

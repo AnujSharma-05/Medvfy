@@ -118,6 +118,19 @@ class TestCountTracker(unittest.TestCase):
         self.assertEqual(t.update(4.05, 2.0), (5, 4))
         self.assertEqual(t.confirmed, 4)
 
+    def test_put_back_needs_a_clear_reading(self):
+        """Regression (live): after one of 4 was taken, the 3 left read 3.6-3.7 once a hand had
+        shuffled them, and the count went back to 4, hiding the dose."""
+        t = CountTracker(2, 2.0)
+        t.reset(4)
+        t.update(3.33, 0.0)
+        self.assertEqual(t.update(3.34, 2.0), (4, 3))   # taking one: normal tolerance
+        for i, est in enumerate([3.61, 3.69, 3.72, 3.66, 3.7]):
+            self.assertIsNone(t.update(est, 3.0 + i))
+        self.assertEqual(t.confirmed, 3)
+        t.update(3.95, 10.0)
+        self.assertEqual(t.update(4.05, 12.0), (3, 4))  # really put back: accepted
+
     def test_brief_dip_does_not_count(self):
         t = CountTracker(2, 2.0)
         t.reset(5)
