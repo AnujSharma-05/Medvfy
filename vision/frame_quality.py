@@ -123,6 +123,10 @@ class FrameQualityAssessor:
 
             g1 = cv2.cvtColor(f1, cv2.COLOR_BGR2GRAY) if len(f1.shape) == 3 else f1
             g2 = cv2.cvtColor(f2, cv2.COLOR_BGR2GRAY) if len(f2.shape) == 3 else f2
+            # Smooth first: glints on crumpled foil and sensor noise flicker single pixels.
+            # Measured live on a still sheet: unsmoothed, 20% of frames passed 2% "motion"
+            # (max 5.8%), so counting kept restarting; smoothed, the maximum was 0.5%.
+            g1, g2 = cv2.GaussianBlur(g1, (5, 5), 0), cv2.GaussianBlur(g2, (5, 5), 0)
 
             diff = cv2.absdiff(g1, g2)
             _, thresh = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)

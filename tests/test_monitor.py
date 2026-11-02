@@ -115,6 +115,18 @@ class TestContinuousMonitor(unittest.TestCase):
             self.monitor._follow_unit("A", 200, 4.0, 100.0)  # never beyond 30% of calibration
         self.assertAlmostEqual(self.monitor.units["A"], 70.0)
 
+    def test_flickering_pixels_are_not_motion(self):
+        """Regression (live, crumpled foil): single pixels glinting between frames kept the scene
+        'moving', so a correct dose read 3.0 but was never confirmed."""
+        rng = np.random.default_rng(1)
+        def glint(now, i):
+            f = EXPECTED.astype(np.int16)
+            spots = rng.random(f.shape[:2]) < 0.05
+            f[spots] += 60
+            return np.clip(f, 0, 255).astype(np.uint8)
+        ticks = self.run_stream(glint, 4.0)
+        self.assertGreaterEqual(sum(t.status == EVALUATED for _, t in ticks), 4)
+
     def test_moving_hand_is_never_evaluated(self):
         ticks = self.run_stream(lambda now, i: with_hand(EXPECTED, i), 5.0)
 
