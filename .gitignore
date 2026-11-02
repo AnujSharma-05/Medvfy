@@ -6,3 +6,4 @@ data/*
 !.gitkeep
 config/schedule.json
 config/auth.json
+MedVerify_Controller/build/
