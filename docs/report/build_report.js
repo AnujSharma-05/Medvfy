@@ -37,6 +37,8 @@ function table(widths, rows, head = true) {
     })) })),
   });
 }
+const img = (file, w, h) => new ImageRun({ type: file.endsWith("png") ? "png" : "jpg", data: fs.readFileSync(file), transformation: { width: w, height: h } });
+const figure = (file, w, h) => new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 40 }, keepNext: true, children: [img(file, w, h)] });
 const caption = (text) => center(text, { size: 21, italics: true, after: 140 });
 
 function report(name, roll) {
@@ -52,7 +54,7 @@ function report(name, roll) {
     center("COMPUTER SCIENCE & ENGINEERING", { bold: true, after: 0 }), center("by", { after: 200 }),
     center(name.toUpperCase(), { size: 28, bold: true, after: 0 }), center(`(${roll})`, { size: 28, bold: true, after: 300 }),
     center("Under the Guidance of", { size: 28, bold: true, after: 0 }),
-    center("PROF. ______________________", { size: 28, bold: true, after: 300 }),
+    center("DR. KETAN SABALE", { size: 28, bold: true, after: 300 }),
     new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 300 },
       children: [new ImageRun({ type: "jpg", data: logo, transformation: { width: 130, height: 129 } })] }),
     center("Department of Computer Science & Engineering,", { after: 0 }), center("School of Technology,", { after: 0 }),
@@ -64,12 +66,12 @@ function report(name, roll) {
     children: [t(l), t("\t" + r)] });
   const certificate = [
     center("Certificate of Originality of Work", { size: 28, bold: true, after: 240 }),
-    p(`I hereby declare that the B. Tech. IoT Project entitled "MedVerify: Camera-Verified Smart Pill Box for Elderly Medication Adherence" submitted by me for the partial fulfilment of the IoT laboratory course of Bachelor of Technology to the Dept. of Computer Science & Engineering at the School of Technology, Pandit Deendayal Energy University, Gandhinagar, is the original record of the project work carried out by me under the supervision of Prof. ______________________.`),
+    p(`I hereby declare that the B. Tech. IoT Project entitled "MedVerify: Camera-Verified Smart Pill Box for Elderly Medication Adherence" submitted by me for the partial fulfilment of the IoT laboratory course of Bachelor of Technology to the Dept. of Computer Science & Engineering at the School of Technology, Pandit Deendayal Energy University, Gandhinagar, is the original record of the project work carried out by me under the supervision of Dr. Ketan Sabale.`),
     p("I also declare that this written submission adheres to the university guidelines for originality and includes proper citations and references wherever required."),
     p("I also declare that I have maintained high academic honesty and integrity and have not falsified any data in my submission."),
     p("I also understand that violation of any guidelines in this regard will attract disciplinary action by the institute.", { after: 900 }),
     sign("Signature of the Student", "Signature of the Supervisor"),
-    sign(name, "Name of the Supervisor"),
+    sign(name, "Dr. Ketan Sabale"),
     sign(roll, "Designation of the Supervisor"),
     p("Place: Gandhinagar", { after: 40 }), p("Date: ____________"),
     new Paragraph({ spacing: { before: 400 }, children: [] }),
@@ -137,12 +139,14 @@ function report(name, roll) {
       ["Compartment sheet", "White paper, 2x2 pen grid, taped down", "Defines compartments A-D"],
     ]),
     caption("Table 3.1: Hardware components and connections"),
+    figure("pins.png", 640, 328), caption("Fig. 3.1: ESP32 pin diagram (LEDs A-D, buzzer)"),
+    new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 40 }, keepNext: true, children: [img("circuit.jpg", 330, 186), new TextRun("   "), img("setup.jpg", 248, 186)] }),
+    caption("Fig. 3.2: Breadboard circuit (left) and complete set-up: laptop, ESP32 circuit, webcam above the compartment sheet (right)"),
     p("Firmware (Arduino C++, flashed from the command line with arduino-cli, no IDE) accepts line commands: A-D (light that LED and beep three times), STOP, TEST, DIAG (12 s wiring check), ALARM (3 s two-tone siren for too many pills), WARN (two slow beeps for an advisory) and HELP. Each command replies with a fixed text, so the server knows the box is alive; a missing reply raises a device-error alert while the dose continues on screen."),
 
     h1("4. Software Design"),
-    p("The software is written in Python (Flask, OpenCV, NumPy) with HTML/JavaScript front ends. Fig. 4.1 shows the data flow."),
-    table([W], [["Webcam -> Camera service (detect squares, count pills, hand guard) -> heartbeat every 1-2 s -> Flask server (schedule, dose manager, alerts) -> ESP32 over USB serial (LEDs, buzzer)  |  Patient screen, Admin console, Caretaker app (browser, polling)"]], false),
-    caption("Fig. 4.1: System data flow"),
+    p("The software is written in Python (Flask, OpenCV, NumPy) with HTML/JavaScript front ends. Fig. 4.1 shows the complete working of the system in its three modes: admin (console), caretaker (app) and patient (screen)."),
+    figure("flowchart.png", 530, 679), caption("Fig. 4.1: Flowchart of the complete working (admin, caretaker and patient modes)"),
     h2("4.1 Vision pipeline"),
     bullet(" A black-hat filter keeps thin dark pen lines; line runs at tilts up to 15 degrees are kept, gaps bridged. Each region of paper fully enclosed by lines is a compartment; its exact outline (not a shrunken box) is stored, so pills anywhere inside it count.", "Compartment detection:"),
     bullet(" medicine = pixels whose colour (Lab chroma > 14) or brightness (> 28) differs from the EMPTY photo, after evening out overall light; count = medicine area / area of one pill.", "Counting:"),
@@ -243,7 +247,7 @@ function report(name, roll) {
 
 for (const [name, roll] of [["Anuj Sharma", "23BCP289"], ["Ishaan Goswami", "23BCP290"]]) {
   Packer.toBuffer(report(name, roll)).then((buf) => {
-    const out = `../../docs/report/MedVerify_IoT_Report_${roll}_${name.replace(" ", "_")}.docx`;
+    const out = `../../docs/report/MedVerify_IoT_Report_${roll}_${name.replace(" ", "_")}_v2.docx`;
     fs.writeFileSync(out, buf);
     console.log("wrote", out);
   });
