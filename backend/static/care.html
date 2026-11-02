@@ -197,7 +197,11 @@ function render(s) {
 
   setHtml("boxes", s.compartment_ids.map((c) => {
     const e = s.compartments[c] || {};
-    return `<div class="box ${CAT[e.state] || ""}"><b>${esc(c)}</b><span class="small">${esc(WORD[e.state] || e.state || "Unknown")}</span></div>`;
+    const label = e.count != null
+      ? `${e.count}${e.loaded_count ? "/" + e.loaded_count : ""} left`
+      : (WORD[e.state] || e.state || "Unknown");
+    const low = e.count != null && e.low_alerted ? " changed" : "";
+    return `<div class="box ${e.count != null ? (e.count > 0 ? "loaded" : "removed") + low : CAT[e.state] || ""}"><b>${esc(c)}</b><span class="small">${esc(label)}</span></div>`;
   }).join(""));
 
   const cmd = s.commands.find((c) => c.type === "recalibrate");

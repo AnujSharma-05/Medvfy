@@ -128,6 +128,22 @@ class EventLogger:
                     "previous_state": t.previous_state.value,
                 })
 
+    def log_count_change(self, slot: str, old: int, new: int, estimate: float | None, timestamp: str) -> None:
+        """A confirmed pill-count change: CSV row now, POST to the server in the background."""
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        is_new_file = not self.log_path.exists()
+        row = [timestamp, slot, f"COUNT_{new}", round(float(estimate or new), 2),
+               "Visual count change; not proof of ingestion.", f"COUNT_{old}", 1.0,
+               f"Pill count {old} -> {new}"]
+        with self.log_path.open("a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if is_new_file:
+                writer.writerow(self.CSV_HEADERS)
+            writer.writerow(row)
+        if self.server_url:
+            self._enqueue({"count": {"compartment_id": slot, "count": int(new), "previous_count": int(old),
+                                     "note": f"Pill count {old} -> {new} (visual only)"}})
+
     def send_heartbeat(self, payload: dict[str, Any]) -> None:
         """Queue a camera liveness report (non-blocking). Failures are counted separately
         from observations so a stopped backend does not drown real delivery errors."""
@@ -159,6 +175,12 @@ class EventLogger:
             try:
                 if item is None:
                     return
+                if "count" in item:
+                    if self._post("/api/observations", item["count"]):
+                        self.delivered_count += 1
+                    else:
+                        self.failed_count += 1
+                    continue
                 if "heartbeat" in item:
                     if not self._post("/api/vision/heartbeat", item["heartbeat"], self._accept_commands):
                         self.heartbeat_failures += 1

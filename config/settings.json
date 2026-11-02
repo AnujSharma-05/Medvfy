@@ -13,8 +13,8 @@
     3,
     4
   ],
-  "camera_width": 1280,
-  "camera_height": 720,
+  "camera_width": 640,
+  "camera_height": 480,
   "change_threshold": 0.08,
   "match_threshold": 0.05,
   "debounce_frames": 2,
@@ -24,10 +24,10 @@
   "motion_threshold": 0.02,
   "monitor_on_start": true,
   "server_url": "http://127.0.0.1:5000",
-  "device_mode": "mock",
+  "device_mode": "serial",
   "esp32_base_url": "http://192.168.4.1",
   "heartbeat_seconds": 5.0,
-  "serial_port": "",
+  "serial_port": "auto",
   "serial_baudrate": 115200,
   "doses": {
     "window_minutes": 30,
@@ -43,5 +43,6 @@
     }
   },
   "blur_min_ratio": 0.5,
-  "blur_threshold": 60.0
+  "blur_threshold": 60.0,
+  "service_heartbeat_seconds": 1.0
 }

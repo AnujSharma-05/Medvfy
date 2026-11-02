@@ -212,6 +212,11 @@ class TrialRecorder:
                 "is_blurry": m.get("is_blurry"),
                 "blur_score": m.get("blur_score"),
                 "brightness": m.get("brightness"),
+                "evidence": m.get("evidence"),
+                "area": m.get("area"),
+                "area_ratio": m.get("area_ratio"),
+                "color_shift": m.get("color_shift"),
+                "count_estimate": m.get("count_estimate"),
             }
             category = state_category(tr.new_state.value)
             if tr.slot not in self.confirmed_after and category in ("removed", "changed"):

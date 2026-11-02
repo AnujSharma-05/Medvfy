@@ -141,12 +141,15 @@ class TestTrialEvaluator(TrialTestBase):
         self.assertEqual((current.correct, current.total), (12, 12))
         self.assertEqual(current.confusion["removed"]["removed"], 3)
 
-        # A "matches loaded" tolerance looser than the removal scores (0.15 here) hides every removal.
-        # (A high change_threshold alone does not: a scene that matches the EMPTY photo still
-        # resolves to removed through the uncertain path, which is real evidence.)
-        loose = grade(trials, Params(0.30, 0.20, 2, 1.0))
-        self.assertEqual(loose.removal_missed, 3)
-        self.assertGreater(loose.cost, current.cost)
+        # With an empty photo the monitor judges by medicine AREA: a removal scores ~1, an
+        # untouched compartment ~0, so even very loose tolerances keep removals apart.
+        evidence = {sc["evidence"] for t in trials for ev in t.evaluations for sc in ev["slots"].values()}
+        self.assertEqual(evidence, {"content"})
+        loose = grade(trials, Params(0.60, 0.25, 2, 1.0))
+        self.assertEqual(loose.removal_missed, 0)
+        # Even an absurd tolerance does not hide them: an emptied compartment also matches the
+        # EMPTY photo, which independently resolves to "removed".
+        self.assertEqual(grade(trials, Params(1.0, 0.99, 2, 1.0)).removal_missed, 0)
 
         ranked = sweep(trials, Params(0.08, 0.05, 2, 1.0))
         self.assertLessEqual(ranked[0].cost, current.cost)

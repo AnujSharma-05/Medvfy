@@ -656,7 +656,8 @@ def main() -> None:
                 h, w = frame.shape[:2]
                 ref_store.save_empty(
                     crops,
-                    {"camera_index": camera_index, "camera_width": w, "camera_height": h},
+                    {"camera_index": camera_index, "camera_width": w, "camera_height": h,
+                     "empty_sharpness": round(FrameQualityAssessor().compute_blur_score(frame), 2)},
                 )
                 monitor.reset()
                 message = "Empty compartment baseline saved."

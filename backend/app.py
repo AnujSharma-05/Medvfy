@@ -184,7 +184,11 @@ def create_reminder():
     compartment = str(body.get("compartment_id", "")).upper()
     if compartment not in COMPARTMENT_SET:
         return jsonify({"ok": False, "error": f"compartment_id must be one of {', '.join(COMPARTMENTS)}"}), 400
-    session_ = DOSES.start_session(compartment, label=str(body.get("label", ""))[:60])
+    try:
+        pills = max(1, min(10, int(body.get("pills", 1))))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "pills must be a whole number"}), 400
+    session_ = DOSES.start_session(compartment, label=str(body.get("label", ""))[:60], dose_size=pills)
     event = {
         "event_id": str(body.get("event_id") or f"evt-{uuid.uuid4().hex[:10]}"),
         "timestamp": utc_now(),
@@ -220,13 +224,18 @@ def record_observation():
     if compartment and compartment not in COMPARTMENT_SET:
         return jsonify({"ok": False, "error": f"compartment_id must be one of {', '.join(COMPARTMENTS)}"}), 400
     allowed = {"compartment_id", "state", "previous_state", "changed_pixel_fraction", "before_image",
-               "after_image", "note"}
+               "after_image", "note", "count", "previous_count"}
     obs = {k: v for k, v in body.items() if k in allowed}
     obs["timestamp"] = utc_now()
     obs["type"] = "VISION_OBSERVATION"
     RECENT_OBSERVATIONS.append(obs)
     del RECENT_OBSERVATIONS[:-100]
     append_jsonl(OBSERVATIONS_FILE, obs)
+    if compartment and obs.get("count") is not None:
+        try:
+            DOSES.record_count(compartment, int(obs["count"]))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "count must be a whole number"}), 400
     if compartment and obs.get("state"):
         DOSES.record_state(compartment, str(obs["state"]).upper())
     return jsonify({"ok": True, "observation": obs}), 201
@@ -244,16 +253,88 @@ def vision_heartbeat():
     for result in body.get("command_results") or []:
         if not isinstance(result, dict):
             continue
-        done = COMMANDS.complete(str(result.get("id", "")), bool(result.get("ok")), str(result.get("message", "")))
+        done = COMMANDS.complete(str(result.get("id", "")), bool(result.get("ok")), str(result.get("message", "")),
+                                 data=result.get("data"))
         if done and done["type"] == "recalibrate" and done["status"] == "done":
             DOSES.mark_recalibrated(by=done["requested_by"])
     DOSES.heartbeat({
         "monitoring": bool(body.get("monitoring", False)),
         "trial": bool(body.get("trial", False)),
+        "details": body.get("details") if isinstance(body.get("details"), dict) else {},
         "camera_index": body.get("camera_index"),
         "states": {str(k).upper(): str(v).upper() for k, v in states.items()},
+        "counts": {str(k).upper(): int(v) for k, v in (body.get("counts") or {}).items()
+                   if isinstance(v, int) and str(k).upper() in COMPARTMENT_SET},
+        "loaded_counts": {str(k).upper(): int(v) for k, v in (body.get("loaded_counts") or {}).items()
+                          if isinstance(v, int)},
     })
     return jsonify({"ok": True, "commands": COMMANDS.pending()})
+
+
+# ------------------------------------------------- local control (mv CLI, console)
+@app.post("/api/camera/command")
+def camera_command():
+    """Queue a command for the camera service (local only: the gate blocks the caretaker port)."""
+    body = request.get_json(silent=True) or {}
+    params = body.get("params") or {}
+    if not isinstance(params, dict):
+        return jsonify({"ok": False, "error": "params must be an object"}), 400
+    try:
+        cmd = COMMANDS.enqueue(str(body.get("type", "")), requested_by="local", params=params)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "command": cmd})
+
+
+@app.get("/api/camera/command/<cmd_id>")
+def camera_command_status(cmd_id: str):
+    cmd = COMMANDS.get(cmd_id)
+    if cmd is None:
+        return jsonify({"ok": False, "error": "unknown command"}), 404
+    return jsonify({"ok": True, "command": cmd})
+
+
+@app.get("/api/device/check")
+def device_check():
+    check = getattr(DEVICE, "check", None)
+    result = check() if check else {"ok": True, "port": None}
+    return jsonify({**result, "mode": DEVICE.mode, "state": DEVICE.get_state()})
+
+
+@app.post("/api/device/light")
+def device_light():
+    """Light one compartment and beep, without opening a dose (hardware testing)."""
+    compartment = str((request.get_json(silent=True) or {}).get("compartment_id", "")).upper()
+    if compartment not in COMPARTMENT_SET:
+        return jsonify({"ok": False, "error": f"compartment_id must be one of {', '.join(COMPARTMENTS)}"}), 400
+    try:
+        result = DEVICE.trigger_reminder(compartment, "manual-test")
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    return jsonify({"ok": True, "result": result})
+
+
+@app.post("/api/device/diag")
+def device_diag():
+    """Run the firmware's 12-second wiring check and return its report (local only)."""
+    diagnose = getattr(DEVICE, "diagnose", None)
+    if diagnose is None:
+        return jsonify({"ok": False, "error": f"Device mode '{DEVICE.mode}' has no diagnostic."}), 400
+    try:
+        lines = diagnose()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    return jsonify({"ok": True, "report": lines})
+
+
+@app.post("/api/device/off")
+def device_off():
+    """All lights off WITHOUT closing open doses (unlike /api/device/stop)."""
+    try:
+        result = DEVICE.stop_alert()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    return jsonify({"ok": True, "result": result})
 
 
 # ------------------------------------------------------------------------ schedule
@@ -334,7 +415,7 @@ def patient_state(now: datetime | None = None) -> dict:
     if active:
         s = active[-1]
         wrong = [f.split(":", 1)[1] for f in s.flags if f.startswith("WRONG_COMPARTMENT:")]
-        return {"mode": "due", "compartment": s.compartment_id, "label": s.label,
+        return {"mode": "due", "compartment": s.compartment_id, "label": s.label, "pills": s.dose_size,
                 "silenced": bool(s.silenced_at), "wrong": wrong[-1] if wrong else None,
                 "others": [o.compartment_id for o in active[:-1]], "deadline": s.deadline}
     for s in reversed(DOSES.sessions):
@@ -515,8 +596,21 @@ def port_in_use(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
+class _QuietHeartbeats:
+    """Drop the access-log line of successful camera heartbeats (one per second) so real
+    requests and errors stay readable in data/logs/server.log."""
+
+    def filter(self, record) -> bool:
+        msg = record.getMessage()
+        return not ("/api/vision/heartbeat" in msg and '" 200 ' in msg)
+
+
 def serve() -> None:
+    import logging
+
     from werkzeug.serving import make_server
+
+    logging.getLogger("werkzeug").addFilter(_QuietHeartbeats())
 
     # On Windows a second server can bind the same port silently (address reuse) and the
     # two then split the requests. Refuse to start instead of running half-invisible.
@@ -539,6 +633,17 @@ if __name__ == "__main__":
     print("Device mode:", DEVICE.mode)
     print("Notification channels:", ", ".join(NOTIFIER.channel_names))
     print(f"Schedule: {len(SCHEDULE.slots)} dose time(s) from {SCHEDULE.path}")
+    box_check = getattr(DEVICE, "check", None)
+    if box_check is not None:
+        # Find out now, not at the first dose time, whether the pill box answers.
+        result = box_check()
+        if result["ok"]:
+            print(f"Pill box answered on {result['port']}.")
+        else:
+            print(f"WARNING: pill box not responding: {result['error']}")
+            NOTIFIER.notify("Pill box not responding",
+                            f"{result['error']} Reminders still appear on screen and in the app.",
+                            WARNING, "DEVICE_ERROR")
     start_scheduler()
     print(f"Patient screen:   http://127.0.0.1:{LOCAL_PORT}/patient")
     print(f"Caretaker app:    http://127.0.0.1:{CARE_PORT}/care   (share this port through a tunnel)")

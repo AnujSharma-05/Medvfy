@@ -1,0 +1,28 @@
+{
+  // MedVerify: Terminal > Run Task... (Ctrl+Shift+P "Run Task"). Ctrl+Shift+B runs "Status".
+  // Every task is a `.\mv ...` command; run `.\mv` in the terminal for the full list.
+  "version": "2.0.0",
+  "options": { "cwd": "${workspaceFolder}" },
+  "presentation": { "reveal": "always", "panel": "shared", "clear": true },
+  "tasks": [
+    { "label": "MedVerify: Start (server + camera)", "type": "shell", "command": ".\\mv.bat up", "problemMatcher": [] },
+    { "label": "MedVerify: Stop", "type": "shell", "command": ".\\mv.bat down", "problemMatcher": [] },
+    { "label": "MedVerify: Status", "type": "shell", "command": ".\\mv.bat status", "problemMatcher": [],
+      "group": { "kind": "build", "isDefault": true } },
+    { "label": "MedVerify: Box - check", "type": "shell", "command": ".\\mv.bat box check", "problemMatcher": [] },
+    { "label": "MedVerify: Box - test all LEDs", "type": "shell", "command": ".\\mv.bat box test", "problemMatcher": [] },
+    { "label": "MedVerify: Box - all off", "type": "shell", "command": ".\\mv.bat box off", "problemMatcher": [] },
+    { "label": "MedVerify: Camera - snapshot", "type": "shell", "command": ".\\mv.bat cam snapshot", "problemMatcher": [] },
+    { "label": "MedVerify: Camera - find regions", "type": "shell", "command": ".\\mv.bat cam regions auto", "problemMatcher": [] },
+    { "label": "MedVerify: Camera - save EMPTY sheet", "type": "shell", "command": ".\\mv.bat cam empty", "problemMatcher": [] },
+    { "label": "MedVerify: Camera - save LOADED sheet", "type": "shell", "command": ".\\mv.bat cam loaded", "problemMatcher": [] },
+    { "label": "MedVerify: Dose - start A now", "type": "shell", "command": ".\\mv.bat dose start A test", "problemMatcher": [] },
+    { "label": "MedVerify: Dose - cancel all", "type": "shell", "command": ".\\mv.bat dose cancel", "problemMatcher": [] },
+    { "label": "MedVerify: Trial - finish", "type": "shell", "command": ".\\mv.bat trial finish", "problemMatcher": [] },
+    { "label": "MedVerify: Trial - evaluate", "type": "shell", "command": ".\\mv.bat trial eval", "problemMatcher": [] },
+    { "label": "MedVerify: Firmware - build", "type": "shell", "command": ".\\mv.bat firmware build", "problemMatcher": [] },
+    { "label": "MedVerify: Firmware - upload", "type": "shell", "command": ".\\mv.bat firmware upload", "problemMatcher": [] },
+    { "label": "MedVerify: Logs", "type": "shell", "command": ".\\mv.bat logs", "problemMatcher": [] },
+    { "label": "MedVerify: Run tests", "type": "shell", "command": ".\\mv.bat test", "problemMatcher": [] }
+  ]
+}

@@ -9,10 +9,13 @@ MedVerify monitors designated medication compartments (A, B, C, D) using compute
 **Start here:**
 - [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) explains the full flow (schedule → reminder → camera → outcome → notifications), known flaws, notification setup, the laptop test, and trial mode for tuning the camera.
 - [docs/flow-map.html](docs/flow-map.html) (open in a browser) has the end-to-end user and technical flow diagrams: caretaker, patient, server and camera, plus the design decisions behind the apps.
+- [docs/HARDWARE_BRINGUP.md](docs/HARDWARE_BRINGUP.md) runs the real ESP32 + webcam setup entirely from VS Code with `.\mv`; wiring is in [docs/HARDWARE_CONNECTIONS.md](docs/HARDWARE_CONNECTIONS.md).
 - [docs/AGENT_CONTEXT.md](docs/AGENT_CONTEXT.md) holds the project's ground rules for engineers and AI agents (safety boundaries, invariants, milestones).
 
 ```powershell
-.\run_medverify.bat     # server + console (http://127.0.0.1:5000) + camera window
+.\mv up                 # server + headless camera in the background (VS Code terminal); .\mv for all commands
+.\mv status             # what is running, box, camera, compartments, doses
+.\run_medverify.bat     # alternative: server + console (http://127.0.0.1:5000) + camera window
 .\run_fake_camera.bat   # drive the server from the keyboard, no webcam needed
 .\run_tests.bat         # full offline test suite
 ```
