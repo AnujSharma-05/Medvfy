@@ -264,6 +264,19 @@ class CameraService:
                 bad.append(slot)
         return bad
 
+    def _nothing_seen(self, frame: np.ndarray, counts: Any) -> list[str]:
+        """Compartments given a count where no medicine differs from the empty photo: the size
+        of one pill could not be learned there (regression: this crashed the service)."""
+        if not counts:
+            return []
+        crops = self.roi_manager.crop(frame, self.rois)
+        bad = []
+        for slot in sorted(str(k).upper() for k in counts):
+            empty = self.ref_store.get_empty(slot)
+            if slot in crops and empty is not None and not np.count_nonzero(self.monitor.medicine(slot, crops[slot], empty)):
+                bad.append(slot)
+        return bad
+
     def _counts_valid(self, counts: Any) -> bool:
         if counts is None:
             return True
@@ -294,6 +307,11 @@ class CameraService:
                 self._result(cmd, False, f"Something in {slots} {where}: a hand in view, or a piece half "
                                          "outside. Keep hands away, put pieces inside (see `mv cam snapshot`), "
                                          "and retry.", now)
+            elif self._nothing_seen(frame, cmd.get("params", {}).get("counts")):
+                slots = ", ".join(self._nothing_seen(frame, cmd.get("params", {}).get("counts")))
+                self._result(cmd, False, f"No medicine seen in {slots}, though a count was given. Check that "
+                                         "the pieces are inside the square (see `mv cam snapshot`) and stand out "
+                                         "from the paper, then retry.", now)
             else:
                 counts = cmd.get("params", {}).get("counts")
                 self.calibrate_loaded(frame, counts)

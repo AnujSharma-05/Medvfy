@@ -316,6 +316,14 @@ class TestCountedPipeline(unittest.TestCase):
         self.assertFalse(r["data"]["empty_reused"])
         self.assertFalse(self.logger.heartbeats[-1]["details"]["has_empty_photo"])
 
+    def test_counted_box_with_nothing_in_it_is_refused_not_a_crash(self):
+        """Regression (live): a box given a count but showing no medicine crashed the service."""
+        self.send("set_regions", {"rois": self.rois})
+        self.send("save_empty", frame=self.paper)
+        r = self.send("recalibrate", {"counts": {s: 5 for s in SLOTS}}, self.frame({"A": 5, "B": 5, "C": 5}))
+        self.assertFalse(r["ok"])
+        self.assertIn("No medicine seen in D", r["message"])
+
     def test_bad_counts_rejected(self):
         self.send("set_regions", {"rois": self.rois})
         self.assertFalse(self.send("recalibrate", {"counts": {"A": 0}})["ok"])
