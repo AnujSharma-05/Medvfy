@@ -4,6 +4,8 @@
 
   Serial Monitor commands (115200 baud, Newline):
     A / B / C / D : simulate a scheduled reminder for that compartment
+    ALARM         : urgent alarm (too many pills taken); LEDs unchanged
+    WARN          : gentle double beep (advisory: one compartment at a time); LEDs unchanged
     TEST          : test all four LEDs and the buzzer
     STOP          : turn all compartment LEDs and buzzer off
     DIAG          : 12 s wiring check (on-board LED + all LEDs + long tone)
@@ -54,10 +56,32 @@ void beepPattern() {
   noTone(BUZZER_PIN);
 }
 
+void alarmPattern() {
+  // Urgent: fast two-tone siren for ~3 s, clearly different from the reminder beeps.
+  for (int i = 0; i < 10; i++) {
+    tone(BUZZER_PIN, 2600, 140);
+    delay(150);
+    tone(BUZZER_PIN, 1600, 140);
+    delay(150);
+  }
+  noTone(BUZZER_PIN);
+}
+
+void warnPattern() {
+  // Advisory: two low, slow beeps.
+  for (int i = 0; i < 2; i++) {
+    tone(BUZZER_PIN, 1200, 300);
+    delay(450);
+  }
+  noTone(BUZZER_PIN);
+}
+
 void printHelp() {
   Serial.println();
   Serial.println("=== MedVerify ESP32 controller ===");
   Serial.println("A/B/C/D : simulate reminder for compartment");
+  Serial.println("ALARM   : urgent alarm (too many pills)");
+  Serial.println("WARN    : advisory double beep");
   Serial.println("TEST    : test LEDs and buzzer");
   Serial.println("STOP    : turn all LEDs and buzzer off");
   Serial.println("DIAG    : 12 s wiring check (on-board LED + all LEDs + long tone)");
@@ -149,6 +173,14 @@ void handleCommand(String command) {
   else if (command == "B") triggerReminder(1);
   else if (command == "C") triggerReminder(2);
   else if (command == "D") triggerReminder(3);
+  else if (command == "ALARM") {
+    Serial.println("ALARM: too many pills taken");
+    alarmPattern();
+  }
+  else if (command == "WARN") {
+    Serial.println("WARN: advisory");
+    warnPattern();
+  }
   else if (command == "TEST") runTest();
   else if (command == "STOP") {
     allLedsOff();

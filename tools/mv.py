@@ -8,6 +8,7 @@
     .\\mv box check|test|off     check the ESP32, light A-D in turn, all lights off
     .\\mv box diag               12 s wiring check with a guide to what you should see
     .\\mv box light A            light one compartment (no dose)
+    .\\mv box alarm | warn       play the too-many-pills alarm / the one-at-a-time advisory
 
     .\\mv cam snapshot           save the current camera image (raw + annotated)
     .\\mv cam regions preview    numbered pen-drawn squares the camera can find (or, with none drawn,
@@ -370,7 +371,7 @@ Unplug USB before moving any wire. Run .\\mv box diag again after each fix."""
 
 def cmd_box(args: list[str]) -> None:
     if not args:
-        raise Fail("Use: box check | test | diag | light A | off")
+        raise Fail("Use: box check | test | diag | light A | alarm | warn | off")
     action = args[0]
     via_server = server_up()
     if via_server and api("GET", "/api/status")["device"].get("mode") != "serial":
@@ -414,11 +415,18 @@ def cmd_box(args: list[str]) -> None:
         elif action == "light" and len(args) > 1:
             light(args[1].upper())
             print(f"LED {args[1].upper()} on (beeped). Turn off with: .\\mv box off")
+        elif action in ("alarm", "warn"):
+            if via_server:
+                api("POST", "/api/device/sound", {"kind": action})
+            else:
+                dev.sound(action)
+            print("Played the " + ("urgent ALARM (too many pills, ~3 s siren)" if action == "alarm"
+                                   else "WARN advisory (two slow low beeps)") + "; lights unchanged.")
         elif action == "off":
             off()
             print("All LEDs off (open doses stay open).")
         else:
-            raise Fail("Use: box check | test | diag | light A | off")
+            raise Fail("Use: box check | test | diag | light A | alarm | warn | off")
     finally:
         if dev is not None and dev._conn is not None:
             dev._conn.close()

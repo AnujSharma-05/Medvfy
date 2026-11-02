@@ -49,6 +49,12 @@ class MockDevice:
         print(f"[MOCK DEVICE] Buzzer silenced; LED {self.state['active_compartment']} stays ON")
         return {"ok": True, "mode": self.mode, "device_state": self.state.copy()}
 
+    def sound(self, kind: str) -> dict[str, Any]:
+        """'alarm' (too many pills) or 'warn' (advisory). Lights unchanged."""
+        self.state["last_command"] = {"type": kind.upper()}
+        print(f"[MOCK DEVICE] Buzzer {kind.upper()} pattern")
+        return {"ok": True, "mode": self.mode, "device_state": self.state.copy()}
+
     def get_state(self) -> dict[str, Any]:
         return {"mode": self.mode, **self.state}
 
@@ -82,7 +88,7 @@ class ESP32SerialDevice:
     mode = "serial"
     BOOT_WAIT_S = 2.0      # Opening the port can reset some boards; wait for them to boot
     REPLY_TIMEOUT_S = 1.5  # The firmware answers within milliseconds; this is generous
-    EXPECTED_REPLY = {"STOP": "Reminder cleared", "HELP": "MedVerify"}
+    EXPECTED_REPLY = {"STOP": "Reminder cleared", "HELP": "MedVerify", "ALARM": "ALARM:", "WARN": "WARN:"}
 
     def __init__(self, port: str, baudrate: int = 115200, serial_factory: Any = None) -> None:
         if not port:
@@ -210,6 +216,11 @@ class ESP32SerialDevice:
     def stop_alert(self) -> dict[str, Any]:
         response = self._send("STOP")
         self.active_compartment = None
+        return {"ok": True, "mode": self.mode, "response": response}
+
+    def sound(self, kind: str) -> dict[str, Any]:
+        """'alarm' (too many pills) or 'warn' (advisory). Lights unchanged."""
+        response = self._send({"alarm": "ALARM", "warn": "WARN"}[kind])
         return {"ok": True, "mode": self.mode, "response": response}
 
     def get_state(self) -> dict[str, Any]:

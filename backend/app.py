@@ -337,6 +337,19 @@ def device_off():
     return jsonify({"ok": True, "result": result})
 
 
+@app.post("/api/device/sound")
+def device_sound():
+    """Play the 'alarm' (too many pills) or 'warn' (advisory) pattern; lights unchanged."""
+    kind = str((request.get_json(silent=True) or {}).get("kind", "")).lower()
+    if kind not in ("alarm", "warn"):
+        return jsonify({"ok": False, "error": "kind must be alarm or warn"}), 400
+    try:
+        result = DEVICE.sound(kind)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    return jsonify({"ok": True, "result": result})
+
+
 # ------------------------------------------------------------------------ schedule
 @app.get("/api/schedule")
 def list_schedule():
@@ -411,6 +424,10 @@ def status():
 # ---------------------------------------------------------------- patient screen
 def patient_state(now: datetime | None = None) -> dict:
     now = now or datetime.now()
+    return {**_patient_mode(now), "alert": DOSES.current_patient_alert(now)}
+
+
+def _patient_mode(now: datetime) -> dict:
     active = DOSES.active_sessions()
     if active:
         s = active[-1]
@@ -430,6 +447,12 @@ def patient_state(now: datetime | None = None) -> dict:
 @app.get("/api/patient/state")
 def patient_state_api():
     return jsonify({"ok": True, **patient_state()})
+
+
+@app.post("/api/patient/alert/ok")
+def patient_alert_ok():
+    DOSES.acknowledge_patient_alert()
+    return jsonify({"ok": True})
 
 
 @app.post("/api/patient/silence")
