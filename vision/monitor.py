@@ -52,6 +52,12 @@ class MonitorConfig:
     content_change_threshold: float = 0.30  # area off by 30% or more = clearly changed
     confirm_observations: int = 2
     confirm_seconds: float = 2.0
+    # Counting tolerance: how far from a whole number an estimate may be and still count
+    # (going down / going up), and how fast the area of one pill follows the pieces actually
+    # in the box while its count is stable (crumpled pieces change their visible area).
+    count_tolerance: float = 0.35
+    count_tolerance_up: float = 0.2
+    unit_follow: float = 0.0
 
     @classmethod
     def from_settings(cls, settings: dict[str, Any]) -> "MonitorConfig":
@@ -70,6 +76,9 @@ class MonitorConfig:
                                                         defaults.content_change_threshold)),
             confirm_observations=int(settings.get("debounce_frames", defaults.confirm_observations)),
             confirm_seconds=float(settings.get("confirm_seconds", defaults.confirm_seconds)),
+            count_tolerance=float(settings.get("count_tolerance", defaults.count_tolerance)),
+            count_tolerance_up=float(settings.get("count_tolerance_up", defaults.count_tolerance_up)),
+            unit_follow=float(settings.get("unit_follow", defaults.unit_follow)),
         )
 
 
@@ -121,6 +130,7 @@ class ContinuousMonitor:
         self._ref_key: Any = object()
         self._ref_stats: dict[str, dict[str, Any]] = {}
         self.counters: dict[str, CountTracker] = {}
+        self.units: dict[str, float] = {}  # current area of one pill (follows crumpled pieces)
         self.last_count_changes: list[tuple[str, int, int]] = []
         self.last_blocked: set[str] = set()
         self.inside: dict[str, np.ndarray] = {}  # drawn compartments: mask of the square in its crop
@@ -257,9 +267,11 @@ class ContinuousMonitor:
         self._ref_key, self._ref_stats = key, stats
         # New calibration: counts start from what was declared, nothing to confirm yet.
         self.counters = {
-            slot: CountTracker(self.config.confirm_observations, self.config.confirm_seconds)
+            slot: CountTracker(self.config.confirm_observations, self.config.confirm_seconds,
+                               self.config.count_tolerance, self.config.count_tolerance_up)
             for slot, st in stats.items() if st["unit"]
         }
+        self.units = {slot: stats[slot]["unit"] for slot in self.counters}
         for slot, counter in self.counters.items():
             counter.reset(stats[slot]["count"])
         return stats
@@ -274,6 +286,19 @@ class ContinuousMonitor:
 
     def uses_content(self) -> bool:
         return self.config.evidence != "pixels" and bool(self.reference_stats())
+
+    def _follow_unit(self, slot: str, area: int, estimate: float, calibrated: float) -> None:
+        """While the confirmed count holds, let one pill's area follow what is really there.
+
+        Crumpled paper pieces look bigger or smaller after a hand touches them; the confirmed
+        count is known, so area / count is the current size of one piece. Only near-matching
+        readings are used (a removal reads a whole pill lower and is never learnt from).
+        """
+        rate, confirmed = self.config.unit_follow, self.counters[slot].confirmed
+        if rate <= 0 or not confirmed or abs(estimate - confirmed) > 0.3:
+            return
+        unit = (1 - rate) * self.units[slot] + rate * area / confirmed
+        self.units[slot] = min(calibrated * (1 + UNIT_FOLLOW_LIMIT), max(calibrated * (1 - UNIT_FOLLOW_LIMIT), unit))
 
     def evaluate(
         self,
@@ -329,11 +354,14 @@ class ContinuousMonitor:
                               "evidence": "content", "edge_blocked": slot_blocked})
                 counter = self.counters.get(slot)
                 if counter is not None:
-                    estimate = area / ref["unit"]
+                    estimate = area / self.units.get(slot, ref["unit"])
                     extra["count_estimate"] = round(estimate, 2)
-                    change = counter.update(None if (is_blurry or slot_blocked) else estimate, now)
+                    usable = not (is_blurry or slot_blocked)
+                    change = counter.update(estimate if usable else None, now)
                     if change is not None:
                         self.last_count_changes.append((slot, change[0], change[1]))
+                    elif usable:
+                        self._follow_unit(slot, area, estimate, ref["unit"])
             else:
                 metrics_exp = self.comparator.compare(expected_crop, current_crop)
                 diff_expected = None if evidence_missing else metrics_exp.composite_diff
@@ -360,6 +388,9 @@ class ContinuousMonitor:
                 )
             )
         return transitions
+
+
+UNIT_FOLLOW_LIMIT = 0.3  # one pill's area may drift at most 30% from the calibrated one
 
 
 def _mean_color(img: np.ndarray, mask: np.ndarray) -> np.ndarray:

@@ -534,10 +534,16 @@ class CameraService:
 
 
 def load_settings() -> dict[str, Any]:
-    try:
-        return json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
+    """config/settings.json, with config/tuning.json (demo speed/tolerance adjustments) on top.
+    Delete tuning.json to go back to the plain settings; the calibration is not affected."""
+    settings: dict[str, Any] = {}
+    for name in ("settings.json", "tuning.json"):
+        try:
+            data = json.loads((ROOT / "config" / name).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        settings.update({k: v for k, v in data.items() if not k.startswith("_")})
+    return settings
 
 
 def main() -> None:

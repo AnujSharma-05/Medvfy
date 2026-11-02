@@ -150,6 +150,17 @@ class TestCountTracker(unittest.TestCase):
         self.assertIsNone(t.update(4.0, 2.5))
         self.assertEqual(t.update(4.0, 3.0), (5, 4))
 
+    def test_crumpled_removal_with_demo_tolerance(self):
+        """config/tuning.json: a crumpled piece taken out of 4 can leave 3.4 units visible."""
+        t = CountTracker(2, 1.0, max_rounding_error=0.45)
+        t.reset(4)
+        t.update(3.44, 0.0)
+        self.assertEqual(t.update(3.42, 1.0), (4, 3))
+        strict = CountTracker(2, 1.0)
+        strict.reset(4)
+        strict.update(3.44, 0.0)
+        self.assertIsNone(strict.update(3.42, 1.0))  # default 0.35: never decides
+
 
 if __name__ == "__main__":
     unittest.main()

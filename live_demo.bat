@@ -25,6 +25,6 @@ echo   mv status                    counts, camera, box, open doses
 echo   mv box alarm ^| warn          play the alarm / advisory sound
 echo   mv cam loaded A=4 B=4 C=4 D=3   after refilling: new loaded photo with counts
 echo   mv down                      stop everything at the end
-echo Camera moved? Re-do set-up: mv cam regions auto, (empty sheet) mv cam empty, (pieces in) mv cam loaded ...
+echo Camera or sheet moved ^(mv status: view blocked A, B, C, D^)?  run  setup_camera.bat  ^(guided, 2 min^)
 echo ============================================================================
 cmd /k

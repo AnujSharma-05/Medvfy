@@ -1,0 +1,10 @@
+{
+  "_about": "Demo adjustments on top of settings.json, read by the camera service at start-up. They change timing and tolerance only, never the calibration. Delete this file (then .\mv down; .\mv up) to go back to the plain settings.",
+  "_was": "settle 1.0 s + confirm 2.0 s (about 3 s), count tolerance 0.35, unit_follow 0 (off)",
+  "settle_seconds": 1.0,
+  "confirm_seconds": 1.0,
+  "monitor_interval_seconds": 0.5,
+  "count_tolerance": 0.45,
+  "count_tolerance_up": 0.2,
+  "unit_follow": 0.1
+}

@@ -101,6 +101,20 @@ class TestContinuousMonitor(unittest.TestCase):
         for s in SLOTS:
             self.assertEqual(self.sm.get_state(s), CompartmentState.EXPECTED_PRESENT)
 
+    def test_unit_follows_crumpled_pieces_only_while_the_count_holds(self):
+        from vision.content import CountTracker
+        self.monitor.config.unit_follow = 0.5
+        self.monitor.counters = {"A": CountTracker()}
+        self.monitor.counters["A"].reset(4)
+        self.monitor.units = {"A": 100.0}
+        self.monitor._follow_unit("A", 380, 3.8, 100.0)     # shuffled: 4 pieces now read 3.8
+        self.assertAlmostEqual(self.monitor.units["A"], 97.5)
+        self.monitor._follow_unit("A", 300, 3.0, 100.0)     # a removal: not learnt from
+        self.assertAlmostEqual(self.monitor.units["A"], 97.5)
+        for _ in range(20):
+            self.monitor._follow_unit("A", 200, 4.0, 100.0)  # never beyond 30% of calibration
+        self.assertAlmostEqual(self.monitor.units["A"], 70.0)
+
     def test_moving_hand_is_never_evaluated(self):
         ticks = self.run_stream(lambda now, i: with_hand(EXPECTED, i), 5.0)
 

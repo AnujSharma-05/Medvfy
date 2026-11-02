@@ -22,7 +22,7 @@ The camera sees removal only, never swallowing: never claim ingestion.
 - Simulated box: `$env:MEDVERIFY_DEVICE="mock"` before `.\mv up`. `config/settings.json`
   keeps `device_mode: serial`, `serial_port: auto` (ESP32 = CP210x, was COM28).
 - Firmware: `.\mv firmware upload` (arduino-cli). Box checks: `.\mv box check|test|diag|alarm|warn`.
-- Tests: `.\mv test` (257 pass).
+- Tests: `.\mv test` (261 pass).
 
 ## Camera set-up (whenever the camera or sheet moves; sheet must be taped down)
 1. `.\mv cam regions preview` - must list 4 squares, numbered A=1 top-left, B=2 top-right,
@@ -90,3 +90,13 @@ afterwards: every box reads "view blocked", counts freeze, doses never close. No
 bug. Fix: fix camera + tape sheet, then redo set-up (regions auto -> empty -> loaded).
 DONE (commit after 7bb10e7): ALL boxes blocked for > 10 s now raises a critical CAMERA_MOVED alert
 (caretaker + patient screen) instead of silently freezing. Reports: docs/report/ (build_report.js).
+
+## 2 Nov 23:30: speed + crumpled pieces + guided set-up
+- `config/tuning.json` (read by the camera service on top of settings.json): settle 1 s + confirm
+  1 s (was 1 + 2, about 3 s -> about 2 s), count_tolerance 0.45 for decreases, unit_follow 0.1 (one pill's
+  area follows crumpled pieces while the count is stable, capped at +/-30%). Delete the file to undo.
+- `setup_camera.bat`: guided regions -> empty -> loaded, backs up the old calibration to
+  data/calibration_backup/<time>/ first; `restore_camera.bat <time>` puts one back.
+- Found at 23:25: the calibration from 17:53 no longer matched (camera/sheet moved; all boxes
+  "view blocked"). Squares are found fine in the new position; set-up must be redone by the user.
+- Demo script: docs/DEMO_SCRIPT.md. Evaluator questions: docs/EVALUATOR_QA.md.
