@@ -30,6 +30,9 @@ from vision.trials import EXPECTED_CATEGORY, state_category
 
 CHANGE_GRID = [0.04, 0.06, 0.08, 0.10, 0.12, 0.15, 0.18, 0.22, 0.26, 0.30]
 MATCH_GRID = [0.02, 0.03, 0.05, 0.07, 0.10, 0.13, 0.16, 0.20]
+# Area ("content") evidence scores 0 (as loaded) .. 1 (empty or very different): wider steps.
+CONTENT_CHANGE_GRID = [0.20, 0.25, 0.30, 0.40, 0.50, 0.60]
+CONTENT_MATCH_GRID = [0.05, 0.10, 0.15, 0.20, 0.25]
 CATEGORIES = ["loaded", "removed", "changed", "unclear"]
 
 

@@ -18,7 +18,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from vision.trial_eval import (  # noqa: E402
-    CATEGORIES, Grade, Params, grade, load_trials, rescore, separability, sweep,
+    CATEGORIES, CONTENT_CHANGE_GRID, CONTENT_MATCH_GRID, Grade, Params, grade, load_trials, rescore,
+    separability, sweep,
 )
 
 SETTINGS = ROOT / "config" / "settings.json"
@@ -44,7 +45,7 @@ def grade_lines(g: Grade, title: str) -> list[str]:
     return lines + [""]
 
 
-def build_report(trials, skipped, base: Params, rescored: bool) -> tuple[list[str], Grade]:
+def build_report(trials, skipped, base: Params, rescored: bool, content: bool = False) -> tuple[list[str], Grade]:
     lines = ["# MedVerify trial report", ""]
     lines.append(f"{len(trials)} trial(s) graded{' (scores recomputed from frames)' if rescored else ''}; "
                  f"{len(skipped)} skipped.")
@@ -71,7 +72,7 @@ def build_report(trials, skipped, base: Params, rescored: bool) -> tuple[list[st
         lines.append(f"| {label} | {fmt(e)} | {fmt(m)} | {e.get('n', m.get('n', 0))} |")
     lines.append("")
 
-    ranked = sweep(trials, base)
+    ranked = sweep(trials, base, *((CONTENT_CHANGE_GRID, CONTENT_MATCH_GRID) if content else ()))
     best = ranked[0]
     lines.append("### Best threshold settings (lowest cost: missed/false removals count 3x)")
     lines.append("")
@@ -110,17 +111,23 @@ def main() -> None:
     args = ap.parse_args()
 
     settings = json.loads(SETTINGS.read_text(encoding="utf-8")) if SETTINGS.exists() else {}
+    trials, skipped = load_trials(args.trials, include_flagged=args.include_flagged)
+    # Area ("content") evidence and pixel evidence use different scales and thresholds.
+    content = any(sc.get("evidence") == "content" for t in trials for ev in t.evaluations
+                  for sc in ev.get("slots", {}).values())
+    prefix = "content_" if content else ""
     base = Params(
-        change_threshold=float(settings.get("change_threshold", 0.08)),
-        match_threshold=float(settings.get("match_threshold", 0.05)),
+        change_threshold=float(settings.get(f"{prefix}change_threshold", 0.30 if content else 0.08)),
+        match_threshold=float(settings.get(f"{prefix}match_threshold", 0.15 if content else 0.05)),
         debounce_frames=int(settings.get("debounce_frames", 2)),
         confirm_seconds=float(settings.get("confirm_seconds", 2.0)),
     )
-    trials, skipped = load_trials(args.trials, include_flagged=args.include_flagged)
+    if content:
+        print("Trials used area evidence: tuning content_change_threshold / content_match_threshold.")
     if args.rescore:
         trials = [rescore(t) for t in trials]
 
-    lines, best = build_report(trials, skipped, base, args.rescore)
+    lines, best = build_report(trials, skipped, base, args.rescore, content)
     text = "\n".join(lines)
     print(text)
     out = Path(args.trials) / "report.md"
@@ -129,11 +136,11 @@ def main() -> None:
         print(f"\nSaved {out}")
 
     if args.apply and trials:
-        settings["change_threshold"] = best.params.change_threshold
-        settings["match_threshold"] = best.params.match_threshold
+        settings[f"{prefix}change_threshold"] = best.params.change_threshold
+        settings[f"{prefix}match_threshold"] = best.params.match_threshold
         SETTINGS.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
-        print(f"Applied change_threshold={best.params.change_threshold}, "
-              f"match_threshold={best.params.match_threshold} to {SETTINGS}")
+        print(f"Applied {prefix}change_threshold={best.params.change_threshold}, "
+              f"{prefix}match_threshold={best.params.match_threshold} to {SETTINGS}")
 
 
 if __name__ == "__main__":
