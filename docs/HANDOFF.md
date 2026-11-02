@@ -111,3 +111,6 @@ DONE (commit after 7bb10e7): ALL boxes blocked for > 10 s now raises a critical 
   evened out; after a replug, retake only the loaded photo (`mv cam loaded ...`).
 - software_demo.bat = live_demo.bat with a simulated box (same software path).
 - Webcam hung once when reopened quickly by two programs: unplug/replug fixed it.
+- 23:55 live check (simulated box, real camera): correct dose A closed in ~3 s; dose B take-2 ->
+  TOO_MANY critical + red Stop screen; pieces taken from C during a B dose -> WRONG_COMPARTMENT screen.
+  config/tuning.json had been invalid JSON (silently ignored) until c2a92d3: tuning is now really live.
