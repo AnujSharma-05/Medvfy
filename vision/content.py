@@ -165,11 +165,16 @@ class CountTracker:
     """
 
     def __init__(self, confirm_observations: int = 2, confirm_seconds: float = 2.0,
-                 max_rounding_error: float = 0.35, max_rounding_error_up: float = 0.2) -> None:
+                 max_rounding_error: float = 0.35, max_rounding_error_up: float = 0.2,
+                 between_seconds: float = 0.0) -> None:
         self.confirm_observations = max(1, confirm_observations)
         self.confirm_seconds = confirm_seconds
         self.max_rounding_error = max_rounding_error
         self.max_rounding_error_up = max_rounding_error_up
+        # Clearly FEWER pills but between two counts (a big crumpled piece left reads 1.4):
+        # after this long steady, take the nearer count. 0 = never decide (wait for a clear reading).
+        self.between_seconds = between_seconds
+        self._between = False
         self.confirmed: int | None = None
         self.last_estimate: float | None = None
         self._candidate: int | None = None
@@ -182,6 +187,7 @@ class CountTracker:
 
     def interrupt(self) -> None:
         self._candidate, self._since, self._seen = None, None, 0
+        self._between = False
 
     def update(self, estimate: float | None, now: float) -> tuple[int, int] | None:
         """Feed one estimate; returns (old, new) when a changed count is confirmed."""
@@ -190,9 +196,15 @@ class CountTracker:
             self.interrupt()
             return None
         rounded = int(round(max(0.0, estimate)))
+        between = False
         if abs(estimate - rounded) > self.max_rounding_error and rounded > 0:
-            self.interrupt()  # between two counts: not evidence for either
-            return None
+            clearly_fewer = self.confirmed is not None and estimate < self.confirmed - 0.5
+            if not (clearly_fewer and self.between_seconds > 0):
+                self.interrupt()  # between two counts: not evidence for either
+                return None
+            between = True
+            if self._candidate is not None and abs(estimate - self._candidate) < 0.6:
+                rounded = self._candidate  # 1.38 .. 1.5 flickering: still the same reading
         if (self.confirmed is not None and rounded > self.confirmed
                 and abs(estimate - rounded) > self.max_rounding_error_up):
             self.interrupt()  # not clearly more pills: keep the lower count
@@ -202,10 +214,13 @@ class CountTracker:
             return None
         if rounded != self._candidate:
             self._candidate, self._since, self._seen = rounded, now, 1
+            self._between = between
         else:
             self._seen += 1
+            self._between = self._between or between
         since = self._since if self._since is not None else now  # (0.0 is a valid start time)
-        if self._seen >= self.confirm_observations and now - since >= self.confirm_seconds:
+        needed = max(self.confirm_seconds, self.between_seconds) if self._between else self.confirm_seconds
+        if self._seen >= self.confirm_observations and now - since >= needed:
             old, self.confirmed = self.confirmed, rounded
             self.interrupt()
             return (old if old is not None else rounded, rounded) if old is not None else None

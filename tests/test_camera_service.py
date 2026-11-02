@@ -476,5 +476,15 @@ class TestResumeCounts(unittest.TestCase):
             self.assertEqual(resume_counts(service, "http://x"), {})
 
 
+class TestTuningFile(unittest.TestCase):
+    def test_tuning_file_is_valid_and_applied(self):
+        """Regression: a backslash in a note made tuning.json invalid JSON and it was skipped."""
+        from vision.camera_service import load_settings
+        settings = load_settings()
+        self.assertEqual(settings.get("confirm_seconds"), 1.0)
+        self.assertEqual(settings.get("count_tolerance"), 0.45)
+        self.assertEqual(settings.get("count_between_seconds"), 3.0)
+
+
 if __name__ == "__main__":
     unittest.main()

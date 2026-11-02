@@ -58,6 +58,7 @@ class MonitorConfig:
     count_tolerance: float = 0.35
     count_tolerance_up: float = 0.2
     unit_follow: float = 0.0
+    count_between_seconds: float = 0.0  # see CountTracker.between_seconds
 
     @classmethod
     def from_settings(cls, settings: dict[str, Any]) -> "MonitorConfig":
@@ -79,6 +80,7 @@ class MonitorConfig:
             count_tolerance=float(settings.get("count_tolerance", defaults.count_tolerance)),
             count_tolerance_up=float(settings.get("count_tolerance_up", defaults.count_tolerance_up)),
             unit_follow=float(settings.get("unit_follow", defaults.unit_follow)),
+            count_between_seconds=float(settings.get("count_between_seconds", defaults.count_between_seconds)),
         )
 
 
@@ -268,7 +270,8 @@ class ContinuousMonitor:
         # New calibration: counts start from what was declared, nothing to confirm yet.
         self.counters = {
             slot: CountTracker(self.config.confirm_observations, self.config.confirm_seconds,
-                               self.config.count_tolerance, self.config.count_tolerance_up)
+                               self.config.count_tolerance, self.config.count_tolerance_up,
+                               self.config.count_between_seconds)
             for slot, st in stats.items() if st["unit"]
         }
         self.units = {slot: stats[slot]["unit"] for slot in self.counters}

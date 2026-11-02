@@ -161,6 +161,18 @@ class TestCountTracker(unittest.TestCase):
         strict.update(3.44, 0.0)
         self.assertIsNone(strict.update(3.42, 1.0))  # default 0.35: never decides
 
+    def test_clearly_fewer_but_between_counts_decides_after_a_while(self):
+        """Live: 3 of 4 taken from B, the big crumpled piece left read 1.38-1.50 for good."""
+        t = CountTracker(2, 1.0, 0.45, 0.2, between_seconds=3.0)
+        t.reset(4)
+        readings = [1.41, 1.47, 1.38, 1.50, 1.44, 1.48, 1.43]
+        results = [t.update(est, i * 0.5) for i, est in enumerate(readings)]
+        self.assertEqual(results[:6], [None] * 6)           # not before 3 s
+        self.assertEqual(results[6], (4, 1))
+        up = CountTracker(2, 1.0, 0.45, 0.2, between_seconds=3.0)
+        up.reset(1)
+        self.assertTrue(all(up.update(1.6, i * 0.5) is None for i in range(20)))  # never upwards
+
 
 if __name__ == "__main__":
     unittest.main()

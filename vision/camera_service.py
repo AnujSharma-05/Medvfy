@@ -539,11 +539,19 @@ def load_settings() -> dict[str, Any]:
     Delete tuning.json to go back to the plain settings; the calibration is not affected."""
     settings: dict[str, Any] = {}
     for name in ("settings.json", "tuning.json"):
+        path = ROOT / "config" / name
+        if not path.exists():
+            continue
         try:
-            data = json.loads((ROOT / "config" / name).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            # Never silently: a broken tuning.json once kept every demo adjustment off.
+            print(f"WARNING: config/{name} could not be read and is IGNORED: {exc}")
             continue
         settings.update({k: v for k, v in data.items() if not k.startswith("_")})
+        if name == "tuning.json":
+            print("Demo tuning (config/tuning.json): " + ", ".join(
+                f"{k}={v}" for k, v in data.items() if not k.startswith("_")))
     return settings
 
 
