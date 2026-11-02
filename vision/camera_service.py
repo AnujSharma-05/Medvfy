@@ -25,6 +25,7 @@ from typing import Any, Callable
 
 import cv2
 import numpy as np
+import requests
 
 from vision.auto_regions import RegionsNotFound, detect_groups, draw_regions, find_regions
 from vision.drawn_regions import find_drawn_cells, find_drawn_layout, line_mask
@@ -546,6 +547,27 @@ def load_settings() -> dict[str, Any]:
     return settings
 
 
+def resume_counts(service: "CameraService", server_url: str) -> dict[str, int]:
+    """Start from the counts the server already knows, not the set-up counts.
+
+    Regression (live): restarting the camera service after a dose reset A from 3 back to the
+    calibrated 4, and the server logged a false "put back". If pieces really changed while the
+    camera was off, the next confirmed reading reports that as a normal change.
+    """
+    try:
+        boxes = requests.get(server_url + "/api/status", timeout=2).json()["doses"]["compartments"]
+    except (requests.RequestException, ValueError, KeyError, TypeError):
+        return {}
+    service.monitor.reference_stats()
+    resumed = {}
+    for slot, counter in service.monitor.counters.items():
+        count = (boxes.get(slot) or {}).get("count")
+        if isinstance(count, int) and count >= 0:
+            counter.reset(count)
+            resumed[slot] = count
+    return resumed
+
+
 def main() -> None:
     from vision.camera_inspector import open_camera  # camera opening + exposure warm-up
 
@@ -569,6 +591,9 @@ def main() -> None:
             print("Camera opened but gave no image.")
             raise SystemExit(1)
         service.attach(frame)
+        resumed = resume_counts(service, str(settings.get("server_url", "http://127.0.0.1:5000")))
+        if resumed:
+            print("Counts carried over from the server: " + ", ".join(f"{k}={v}" for k, v in resumed.items()))
         print(f"Camera service running: camera {index}, {frame.shape[1]}x{frame.shape[0]}, "
               f"monitoring {'on' if service.monitoring else 'off'}.")
         failures = 0

@@ -452,5 +452,29 @@ class TestCameraService(unittest.TestCase):
         self.assertEqual(self.svc.rois["D"], [200, 200, 100, 100])
 
 
+
+class TestResumeCounts(unittest.TestCase):
+    """A restarted camera service starts from the server's counts, not the set-up counts."""
+
+    def test_counts_carried_over_and_server_down_is_harmless(self):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        import requests
+
+        from vision.camera_service import resume_counts
+        from vision.content import CountTracker
+        counters = {"A": CountTracker(), "B": CountTracker()}
+        for c in counters.values():
+            c.reset(4)
+        service = SimpleNamespace(monitor=SimpleNamespace(counters=counters, reference_stats=lambda: None))
+        reply = mock.Mock(json=lambda: {"doses": {"compartments": {"A": {"count": 3}, "B": {"count": None}}}})
+        with mock.patch("vision.camera_service.requests.get", return_value=reply):
+            self.assertEqual(resume_counts(service, "http://x"), {"A": 3})
+        self.assertEqual((counters["A"].confirmed, counters["B"].confirmed), (3, 4))
+        with mock.patch("vision.camera_service.requests.get", side_effect=requests.ConnectionError):
+            self.assertEqual(resume_counts(service, "http://x"), {})
+
+
 if __name__ == "__main__":
     unittest.main()
