@@ -25,8 +25,10 @@ from typing import Any, Callable
 
 import cv2
 import numpy as np
+import requests
 
 from vision.auto_regions import RegionsNotFound, detect_groups, draw_regions, find_regions
+from vision.drawn_regions import find_drawn_cells, find_drawn_layout, line_mask
 from vision.event_logger import EventLogger
 from vision.frame_quality import FrameQualityAssessor
 from vision.monitor import EVALUATED, WAITING, ContinuousMonitor, MonitorConfig
@@ -36,6 +38,19 @@ from vision.state_machine import CompartmentState, CompartmentStateMachine
 from vision.trials import LABELS, TrialRecorder
 
 ROOT = Path(__file__).resolve().parents[1]
+MAX_SHEET_SHIFT = 40  # px; a bigger move means the camera or sheet really moved: start over
+
+
+def _sheet_shift(then: np.ndarray, now: np.ndarray) -> tuple[int, int]:
+    """(dx, dy) that moves `then` onto `now`, measured on the pen lines (medicine differs between
+    the two photos by design, the drawing does not). (0, 0) when there is no drawing to follow."""
+    a, b = line_mask(then).astype(np.float32), line_mask(now).astype(np.float32)
+    if np.count_nonzero(a) < 500 or np.count_nonzero(b) < 500:
+        return 0, 0
+    (dx, dy), response = cv2.phaseCorrelate(a, b)
+    if response < 0.05:
+        return 0, 0
+    return int(round(dx)), int(round(dy))
 
 
 @dataclass
@@ -55,6 +70,8 @@ class ServicePaths:
     def trials_dir(self) -> Path: return self.data_dir / "trials"
     @property
     def snapshots_dir(self) -> Path: return self.data_dir / "snapshots"
+    @property
+    def empty_frame_file(self) -> Path: return self.data_dir / "vision_empty_frame.png"
 
 
 class StillnessTracker:
@@ -125,6 +142,7 @@ class CameraService:
         self.frame_size = (first_frame.shape[1], first_frame.shape[0])
         self.rois = self.roi_manager.load(self.slots, first_frame.shape, camera_index=self.camera_index)
         self.monitor.rois = self.rois
+        self.monitor.set_outlines(self.roi_manager.load_outlines(self.slots) if self.rois else {})
         self.monitoring = bool(self.settings.get("monitor_on_start", True)) and self.monitor.is_ready()
         if self.rois is None:
             print("No compartment regions saved for this camera/resolution yet: send `mv cam regions auto`.")
@@ -196,6 +214,7 @@ class CameraService:
                 "count_estimates": {slot: (round(c.last_estimate, 2) if c.last_estimate is not None else None)
                                     for slot, c in self.monitor.counters.items()},
                 "evidence": "area" if self.monitor.uses_content() else "pixels",
+                "view_blocked": sorted(self.monitor.last_blocked),
                 "waiting_for": self._waiting["type"] if self._waiting else None,
                 "trial": {
                     "active": self.recorder.active,
@@ -234,6 +253,31 @@ class CameraService:
         else:
             self._result(cmd, False, f"Unknown command {kind}", now)
 
+    def _pieces_on_edges(self, frame: np.ndarray) -> list[str]:
+        """Compartments where something crosses the border (the drawn line, or the box edge for
+        plain regions), judged against the empty photo. A piece half outside is only partly
+        counted, so its removal could never be confirmed: refuse such a calibration instead."""
+        crops = self.roi_manager.crop(frame, self.rois)
+        bad = []
+        for slot in self.slots:
+            empty = self.ref_store.get_empty(slot)
+            if empty is not None and self.monitor.view_blocked(slot, crops[slot], empty):
+                bad.append(slot)
+        return bad
+
+    def _nothing_seen(self, frame: np.ndarray, counts: Any) -> list[str]:
+        """Compartments given a count where no medicine differs from the empty photo: the size
+        of one pill could not be learned there (regression: this crashed the service)."""
+        if not counts:
+            return []
+        crops = self.roi_manager.crop(frame, self.rois)
+        bad = []
+        for slot in sorted(str(k).upper() for k in counts):
+            empty = self.ref_store.get_empty(slot)
+            if slot in crops and empty is not None and not np.count_nonzero(self.monitor.medicine(slot, crops[slot], empty)):
+                bad.append(slot)
+        return bad
+
     def _counts_valid(self, counts: Any) -> bool:
         if counts is None:
             return True
@@ -254,7 +298,21 @@ class CameraService:
                 crops = self.roi_manager.crop(frame, self.rois)
                 self.ref_store.save_empty(crops, {"camera_index": self.camera_index,
                                                   "empty_sharpness": round(quality.blur_score, 2)})
+                # Keep the whole empty sheet (lossless) so regions can be redrawn later without
+                # clearing the sheet again, as long as the camera has not moved.
+                cv2.imwrite(str(self.paths.empty_frame_file), frame)
                 self._result(cmd, True, "Saved the 'empty' photos.", now)
+            elif self._pieces_on_edges(frame):
+                slots = ", ".join(self._pieces_on_edges(frame))
+                where = "lies across the drawn line" if self.monitor.inside else "touches the edge of its box"
+                self._result(cmd, False, f"Something in {slots} {where}: a hand in view, or a piece half "
+                                         "outside. Keep hands away, put pieces inside (see `mv cam snapshot`), "
+                                         "and retry.", now)
+            elif self._nothing_seen(frame, cmd.get("params", {}).get("counts")):
+                slots = ", ".join(self._nothing_seen(frame, cmd.get("params", {}).get("counts")))
+                self._result(cmd, False, f"No medicine seen in {slots}, though a count was given. Check that "
+                                         "the pieces are inside the square (see `mv cam snapshot`) and stand out "
+                                         "from the paper, then retry.", now)
             else:
                 counts = cmd.get("params", {}).get("counts")
                 self.calibrate_loaded(frame, counts)
@@ -294,13 +352,18 @@ class CameraService:
         raw, annotated = d / "latest.jpg", d / "latest_annotated.jpg"
         cv2.imwrite(str(raw), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
         states = {s: self.monitor.state_machine.get_state(s).value for s in self.slots}
-        cv2.imwrite(str(annotated), draw_regions(frame, self.rois or {}, states), [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+        view = draw_regions(frame, self.rois or {}, states, self.roi_manager.load_outlines(self.slots))
+        cv2.imwrite(str(annotated), view, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
         self._result(cmd, True, f"Saved {annotated}", now, {"raw": str(raw), "annotated": str(annotated)})
 
     def _set_regions(self, cmd, params, frame, now) -> None:
         if params.get("preview"):
             # Show what auto-detection sees, numbered, and change nothing (for placing the camera
-            # and for choosing which group number is which compartment letter).
+            # and for choosing which number is which compartment letter). Pen-drawn squares win.
+            cells = find_drawn_cells(frame)
+            if cells:
+                self._preview_drawn(cmd, frame, cells, now)
+                return
             groups, ignored = detect_groups(frame)
             listing = "\n".join(f"  {i + 1}: {g.color:<7} at x={g.box[0]} y={g.box[1]} w={g.box[2]} h={g.box[3]}"
                                 for i, g in enumerate(groups))
@@ -318,12 +381,15 @@ class CameraService:
                           "ignored": ignored, "image": str(path)})
             return
         try:
-            rois = find_regions(frame, self.slots, assign=params.get("assign")) if params.get("auto") else {
-                str(k).upper(): [int(v) for v in box] for k, box in (params.get("rois") or {}).items()}
+            if params.get("auto"):
+                rois, outlines = self._auto_regions(frame, params.get("assign"))
+            else:
+                rois, outlines = {str(k).upper(): [int(v) for v in box]
+                                  for k, box in (params.get("rois") or {}).items()}, {}
         except (RegionsNotFound, TypeError, ValueError) as exc:
             self._result(cmd, False, str(exc), now)
             return
-        self.roi_manager.save(rois, frame.shape, camera_index=self.camera_index)
+        self.roi_manager.save(rois, frame.shape, camera_index=self.camera_index, outlines=outlines)
         checked = self.roi_manager.load(self.slots, frame.shape, camera_index=self.camera_index)
         if checked is None:
             self._result(cmd, False, "Regions rejected: every compartment needs a box of at least 15x15 px "
@@ -334,12 +400,78 @@ class CameraService:
         # New layout: old photos and states no longer describe it (same rule as the R key).
         self.rois = checked
         self.monitor.rois = checked
+        self.monitor.set_outlines(outlines)
         self.ref_store.clear()
         self.state_machine.clear_state()
         self.monitoring = False
         self.monitor.reset()
+        if self._reuse_empty_frame(frame, checked):
+            self._result(cmd, True, "Regions saved; the empty photo was re-cut from the saved empty sheet "
+                                    "(camera has not moved). Next: `mv cam loaded A=.. B=..`.", now,
+                         {"rois": checked, "empty_reused": True})
+            return
         self._result(cmd, True, "Regions saved. Next: empty the sheet and `mv cam empty`, then load it and "
-                                "`mv cam loaded`.", now, {"rois": checked})
+                                "`mv cam loaded`.", now, {"rois": checked, "empty_reused": False})
+
+    def _auto_regions(self, frame: np.ndarray, assign: dict | None
+                      ) -> tuple[dict[str, list[int]], dict[str, list[list[int]]]]:
+        """Pen-drawn squares (with their exact outlines) when the sheet has any; otherwise boxes
+        around the medicine groups."""
+        if find_drawn_cells(frame):
+            return find_drawn_layout(frame, self.slots, assign=assign)
+        return find_regions(frame, self.slots, assign=assign), {}
+
+    def _preview_drawn(self, cmd, frame: np.ndarray, cells: list, now: float) -> None:
+        listing = "\n".join(f"  {i + 1}: {c.contents:<7} at x={c.box[0]} y={c.box[1]} w={c.box[2]} h={c.box[3]}"
+                            for i, c in enumerate(cells))
+        self.paths.snapshots_dir.mkdir(parents=True, exist_ok=True)
+        path = self.paths.snapshots_dir / "regions_preview.jpg"
+        labelled = {f"{i + 1} {c.contents}": c.box for i, c in enumerate(cells)}
+        shapes = {f"{i + 1} {c.contents}": c.outline for i, c in enumerate(cells)}
+        cv2.imwrite(str(path), draw_regions(frame, labelled, outlines=shapes), [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+        enough = len(cells) >= len(self.slots)
+        verdict = (f"{len(cells)} complete drawn square(s):\n" + listing
+                   + ("" if enough else f"\nNeed {len(self.slots)}: every square must be fully in view, "
+                                        "with its pen lines closed."))
+        self._result(cmd, True, f"{verdict}\nPreview image: {path}", now,
+                     {"ok": enough, "drawn": True,
+                      "squares": [{"number": i + 1, "contents": c.contents, "fill": c.fill, "box": c.box}
+                                  for i, c in enumerate(cells)],
+                      "image": str(path)})
+
+    def _reuse_empty_frame(self, frame: np.ndarray, rois: dict[str, list[int]]) -> bool:
+        """Re-cut the empty references for new regions from the saved empty sheet, if the camera
+        still sees the same scene. Judged on the paper OUTSIDE the regions (inside, the medicine
+        differs by design): if the camera moved, that paper no longer lines up."""
+        path = self.paths.empty_frame_file
+        if not path.exists():
+            return False
+        empty = cv2.imread(str(path))
+        if empty is None or empty.shape != frame.shape:
+            return False
+        # A sheet that slid a little while pieces were handled (measured: 10 px) is followed by
+        # shifting the empty photo onto the drawn grid's new position.
+        dx, dy = _sheet_shift(empty, frame)
+        if (dx or dy) and max(abs(dx), abs(dy)) <= MAX_SHEET_SHIFT:
+            empty = cv2.warpAffine(empty, np.float32([[1, 0, dx], [0, 1, dy]]), (frame.shape[1], frame.shape[0]),
+                                   borderMode=cv2.BORDER_REPLICATE)
+            print(f"The sheet moved by ({dx}, {dy}) px since the empty photo: shifted it to match.")
+        outside = np.ones(frame.shape[:2], dtype=bool)
+        for x, y, w, h in rois.values():
+            outside[y:y + h, x:x + w] = False
+        g_now = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.int16)
+        g_then = cv2.cvtColor(empty, cv2.COLOR_BGR2GRAY).astype(np.int16)
+        # Even out overall brightness, then compare the paper pixel by pixel.
+        g_now = g_now - int(np.median(g_now[outside])) + int(np.median(g_then[outside]))
+        moved = float(np.mean(np.abs(g_now - g_then)[outside] > 25))
+        if moved > 0.05:
+            path.unlink(missing_ok=True)
+            print(f"Camera view changed since the empty photo ({moved:.0%} of the paper differs): not reused.")
+            return False
+        sharp = self.monitor.assessor.compute_blur_score(empty)
+        self.ref_store.save_empty(self.roi_manager.crop(empty, rois), {"camera_index": self.camera_index,
+                                                                       "empty_sharpness": round(sharp, 2)})
+        return True
 
     def _monitor(self, cmd, params, frame, now) -> None:
         on = bool(params.get("on", True))
@@ -403,10 +535,45 @@ class CameraService:
 
 
 def load_settings() -> dict[str, Any]:
+    """config/settings.json, with config/tuning.json (demo speed/tolerance adjustments) on top.
+    Delete tuning.json to go back to the plain settings; the calibration is not affected."""
+    settings: dict[str, Any] = {}
+    for name in ("settings.json", "tuning.json"):
+        path = ROOT / "config" / name
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            # Never silently: a broken tuning.json once kept every demo adjustment off.
+            print(f"WARNING: config/{name} could not be read and is IGNORED: {exc}")
+            continue
+        settings.update({k: v for k, v in data.items() if not k.startswith("_")})
+        if name == "tuning.json":
+            print("Demo tuning (config/tuning.json): " + ", ".join(
+                f"{k}={v}" for k, v in data.items() if not k.startswith("_")))
+    return settings
+
+
+def resume_counts(service: "CameraService", server_url: str) -> dict[str, int]:
+    """Start from the counts the server already knows, not the set-up counts.
+
+    Regression (live): restarting the camera service after a dose reset A from 3 back to the
+    calibrated 4, and the server logged a false "put back". If pieces really changed while the
+    camera was off, the next confirmed reading reports that as a normal change.
+    """
     try:
-        return json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        boxes = requests.get(server_url + "/api/status", timeout=2).json()["doses"]["compartments"]
+    except (requests.RequestException, ValueError, KeyError, TypeError):
         return {}
+    service.monitor.reference_stats()
+    resumed = {}
+    for slot, counter in service.monitor.counters.items():
+        count = (boxes.get(slot) or {}).get("count")
+        if isinstance(count, int) and count >= 0:
+            counter.reset(count)
+            resumed[slot] = count
+    return resumed
 
 
 def main() -> None:
@@ -432,6 +599,9 @@ def main() -> None:
             print("Camera opened but gave no image.")
             raise SystemExit(1)
         service.attach(frame)
+        resumed = resume_counts(service, str(settings.get("server_url", "http://127.0.0.1:5000")))
+        if resumed:
+            print("Counts carried over from the server: " + ", ".join(f"{k}={v}" for k, v in resumed.items()))
         print(f"Camera service running: camera {index}, {frame.shape[1]}x{frame.shape[0]}, "
               f"monitoring {'on' if service.monitoring else 'off'}.")
         failures = 0

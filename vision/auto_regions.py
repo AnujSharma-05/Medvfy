@@ -43,6 +43,7 @@ class Group:
     box: list[int]
     area: int
     color: str
+    core: list[int] | None = None  # the objects' own extent [x0, y0, x1, y1], without margin
 
 
 def color_name(frame: np.ndarray, mask: np.ndarray) -> str:
@@ -68,11 +69,17 @@ def color_name(frame: np.ndarray, mask: np.ndarray) -> str:
 
 
 def reading_order(boxes: list[list[int]], frame_height: int) -> list[list[int]]:
-    """Top row first (a new row when centres differ by over 20% of the height), left to right."""
+    """Top row first, left to right. A new row starts when a centre is lower than the row's
+    by over half a box height (or 20% of the picture, whichever is smaller): a small grid far
+    from the camera has rows closer together than 20% of the picture (measured: 94 px of 480)."""
+    if not boxes:
+        return []
+    heights = sorted(b[3] for b in boxes)
+    gap = min(frame_height * 0.2, 0.5 * heights[len(heights) // 2])
     rows: list[list[list[int]]] = []
     for b in sorted(boxes, key=lambda b: b[1] + b[3] / 2):
         cy = b[1] + b[3] / 2
-        if rows and abs(cy - (rows[-1][0][1] + rows[-1][0][3] / 2)) < frame_height * 0.2:
+        if rows and abs(cy - (rows[-1][0][1] + rows[-1][0][3] / 2)) < gap:
             rows[-1].append(b)
         else:
             rows.append([b])
@@ -114,7 +121,9 @@ def detect_groups(frame: np.ndarray, margin: int = 30, min_area_fraction: float 
         # Shrink the dilation back off, then add the margin, clamped to the frame.
         x0, y0 = max(0, x + pad - margin), max(0, y + pad - margin)
         x1, y1 = min(w, x + bw - pad + margin), min(h, y + bh - pad + margin)
-        groups.append(Group([x0, y0, x1 - x0, y1 - y0], real, color_name(frame, real_mask.astype(np.uint8))))
+        ys, xs = np.nonzero(real_mask)
+        core = [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1]
+        groups.append(Group([x0, y0, x1 - x0, y1 - y0], real, color_name(frame, real_mask.astype(np.uint8)), core))
     by_box = {tuple(g.box): g for g in groups}
     ordered = [by_box[tuple(b)] for b in reading_order([g.box for g in groups], h)]
     return ordered, ignored
@@ -142,33 +151,81 @@ def find_regions(frame: np.ndarray, slots: list[str], assign: dict[str, int] | N
         bad = [n for n in letters.values() if not 1 <= n <= len(groups)]
         if bad:
             raise RegionsNotFound(f"There is no group {bad[0]}: the preview shows {len(groups)} group(s){note}.")
-        chosen = {s: groups[letters[s] - 1].box for s in slots}
+        picked = {s: groups[letters[s] - 1] for s in slots}
     else:
         if len(groups) < len(slots):
             raise RegionsNotFound(f"Found {len(groups)} group(s) of objects on the sheet, need {len(slots)}{note}. "
                                   "Every group must be fully inside the picture with paper all around it.")
         largest = sorted(groups, key=lambda g: g.area, reverse=True)[: len(slots)]
         keep = {id(g) for g in largest}
-        chosen = {s: g.box for s, g in zip(slots, [g for g in groups if id(g) in keep])}
+        picked = {s: g for s, g in zip(slots, [g for g in groups if id(g) in keep])}
 
-    # Boxes must not overlap, or one compartment's change would show in another's region.
-    boxes = list(chosen.values())
-    for i in range(len(boxes)):
-        for j in range(i + 1, len(boxes)):
-            a, b = boxes[i], boxes[j]
-            if a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]:
-                raise RegionsNotFound("Two groups are too close together to separate. Move them apart.")
+    # Boxes must not overlap, or one compartment's change would show in another's region. When
+    # only the paper MARGINS of two boxes overlap, the boundary goes halfway across the gap
+    # between the groups; it is refused only when the groups themselves are too close.
+    chosen = {s: list(g.box) for s, g in picked.items()}
+    cores = {s: g.core for s, g in picked.items()}
+    order = list(chosen)
+    for i in range(len(order)):
+        for j in range(i + 1, len(order)):
+            a, b = order[i], order[j]
+            if _overlap(chosen[a], chosen[b]) and not _separate(chosen, cores, a, b):
+                raise RegionsNotFound(f"Compartments {a} and {b} are too close together to separate. "
+                                      "Move them apart (at least about 2 cm of paper between groups).")
     return chosen
 
 
-def draw_regions(frame: np.ndarray, rois: dict[str, list[int]], states: dict[str, str] | None = None) -> np.ndarray:
-    """Annotated copy of the frame: one labelled box per compartment."""
+MIN_GAP = 16  # px of paper needed between two groups to split their margins
+
+
+def _overlap(a: list[int], b: list[int]) -> bool:
+    return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
+
+
+def _separate(boxes: dict[str, list[int]], cores: dict[str, list[int] | None], a: str, b: str) -> bool:
+    """Trim the overlapping margins of a and b to the middle of the gap between their groups."""
+    ca, cb = cores.get(a), cores.get(b)
+    if ca is None or cb is None:
+        return False
+    gaps = []  # (gap size, axis, first, second)
+    if ca[2] + MIN_GAP <= cb[0]:
+        gaps.append((cb[0] - ca[2], 0, a, b))
+    if cb[2] + MIN_GAP <= ca[0]:
+        gaps.append((ca[0] - cb[2], 0, b, a))
+    if ca[3] + MIN_GAP <= cb[1]:
+        gaps.append((cb[1] - ca[3], 1, a, b))
+    if cb[3] + MIN_GAP <= ca[1]:
+        gaps.append((ca[1] - cb[3], 1, b, a))
+    if not gaps:
+        return False
+    _, axis, first, second = max(gaps)  # split across the widest gap
+    end_first = cores[first][2 + axis]
+    start_second = cores[second][axis]
+    mid = (end_first + start_second) // 2
+    f, sec = boxes[first], boxes[second]
+    f_end = min(f[axis] + f[2 + axis], mid - 2)
+    f[2 + axis] = f_end - f[axis]
+    s_end = sec[axis] + sec[2 + axis]
+    sec[axis] = max(sec[axis], mid + 2)
+    sec[2 + axis] = s_end - sec[axis]
+    return True
+
+
+def draw_regions(frame: np.ndarray, rois: dict[str, list[int]], states: dict[str, str] | None = None,
+                 outlines: dict[str, list[list[int]]] | None = None) -> np.ndarray:
+    """Annotated copy of the frame: one labelled box per compartment (its drawn outline, when it
+    has one, instead of the box)."""
     view = frame.copy()
     for slot, (x, y, w, h) in rois.items():
         state = (states or {}).get(slot, "")
         color = {"EXPECTED_PRESENT": (0, 170, 0), "REMOVAL_DETECTED": (0, 0, 230),
                  "PARTIAL_OR_WRONG": (0, 140, 255), "UNCERTAIN": (0, 100, 255)}.get(state, (200, 120, 0))
-        cv2.rectangle(view, (x, y), (x + w, y + h), color, 2)
+        shape = (outlines or {}).get(slot)
+        if shape:
+            cv2.polylines(view, [np.array(shape, np.int32)], True, color, 2)
+            x, y = min(p[0] for p in shape), min(p[1] for p in shape)
+        else:
+            cv2.rectangle(view, (x, y), (x + w, y + h), color, 2)
         label = f"{slot} {state}".strip()
         cv2.putText(view, label, (x + 4, y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3)
         cv2.putText(view, label, (x + 4, y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 1)

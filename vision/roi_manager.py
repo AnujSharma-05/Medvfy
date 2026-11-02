@@ -92,8 +92,10 @@ class ROIManager:
         rois: dict[str, list[int]],
         frame_shape: tuple[int, int] | tuple[int, int, int],
         camera_index: int | None = None,
+        outlines: dict[str, list[list[int]]] | None = None,
     ) -> None:
-        """Atomically save ROIs along with frame dimension metadata."""
+        """Atomically save ROIs along with frame dimension metadata. `outlines` (optional) are
+        the drawn compartments' exact shapes in frame coordinates, each inside its box."""
         height, width = frame_shape[:2]
         payload = {
             "version": 2,
@@ -103,6 +105,8 @@ class ROIManager:
             "frame_height": height,
             "rois": {slot: [int(v) for v in box] for slot, box in rois.items()},
         }
+        if outlines:
+            payload["outlines"] = {slot: [[int(px), int(py)] for px, py in pts] for slot, pts in outlines.items()}
 
         self.roi_path.parent.mkdir(parents=True, exist_ok=True)
         dir_name = self.roi_path.parent
@@ -114,6 +118,15 @@ class ROIManager:
             json.dump(payload, tmp, indent=2)
 
         tmp_path.replace(self.roi_path)
+
+    def load_outlines(self, slots: list[str]) -> dict[str, list[list[int]]]:
+        """Saved compartment shapes, or {} when the regions are plain boxes."""
+        try:
+            data = json.loads(self.roi_path.read_text(encoding="utf-8"))
+            outlines = data.get("outlines") or {}
+            return {s: [[int(px), int(py)] for px, py in outlines[s]] for s in slots}
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            return {}
 
     def crop(
         self, frame: np.ndarray, rois: dict[str, list[int]]

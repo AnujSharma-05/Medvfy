@@ -32,6 +32,12 @@ class FakeDevice:
         self.calls.append(("stop", None))
         return {"ok": True}
 
+    def sound(self, kind):
+        if self.fail:
+            raise ConnectionError("port closed")
+        self.calls.append(("sound", kind))
+        return {"ok": True}
+
     def get_state(self):
         return {"mode": self.mode}
 
@@ -387,6 +393,88 @@ class TestCountedDoses(DoseTestBase):
         session = self.dm.active_sessions()[0]
         self.assertEqual(session.dose_size, 2)
         self.assertIn("2 pills", self.notes("DOSE_DUE")[-1]["message"])
+
+
+class TestPatientAlerts(TestCountedDoses):
+    """What the patient sees and hears when something goes wrong at the box."""
+
+    def alert(self):
+        return self.dm.current_patient_alert(self.now)
+
+    def test_too_many_pills_sounds_the_alarm_and_shows_stop(self):
+        self.dm.start_session("A", self.now)
+        self.report(A=5)
+        self.assertIn(("sound", "alarm"), self.device.calls)
+        self.assertEqual(self.alert()["kind"], "TOO_MANY")
+        self.assertIn("Stop", self.alert()["en"])
+
+    def test_extra_pill_after_the_dose_sounds_the_alarm(self):
+        self.dm.start_session("A", self.now)
+        self.report(A=6)
+        self.assertIsNone(self.alert())
+        self.advance(minutes=1, tick=False)
+        self.report(A=5)
+        self.assertIn(("sound", "alarm"), self.device.calls)
+        self.assertEqual(self.alert()["kind"], "TOO_MANY")
+
+    def test_wrong_box_tells_the_patient_the_right_one(self):
+        self.dm.start_session("A", self.now)
+        self.device.calls.clear()
+        self.report(D=6)
+        self.assertEqual(self.alert()["kind"], "WRONG_COMPARTMENT")
+        self.assertIn("box A", self.alert()["en"])
+        self.assertIn(("remind", "A"), self.device.calls)  # light back on A, beeping
+
+    def test_two_boxes_at_once_asks_for_one_at_a_time(self):
+        self.dm.start_session("A", self.now)
+        self.report(A=6, B=6)  # both seen in the same heartbeat
+        self.assertEqual(len(self.notes("MULTI_COMPARTMENT")), 1)
+        self.assertEqual(self.alert()["kind"], "MULTI_COMPARTMENT")
+        self.assertIn(("sound", "warn"), self.device.calls)
+
+    def test_boxes_minutes_apart_are_not_at_once(self):
+        self.report(B=6)
+        self.advance(minutes=2, tick=False)
+        self.report(C=1)
+        self.assertEqual(self.notes("MULTI_COMPARTMENT"), [])
+
+    def test_alert_goes_away_on_ok_or_after_a_while(self):
+        self.dm.start_session("A", self.now)
+        self.report(A=5)
+        self.dm.acknowledge_patient_alert()
+        self.assertIsNone(self.alert())
+        self.dm.start_session("B", self.now)
+        self.report(B=5)
+        self.advance(seconds=self.config.patient_alert_seconds + 1, tick=False)
+        self.assertIsNone(self.alert())
+
+    def test_buzzer_failure_still_shows_the_alert(self):
+        self.dm.start_session("A", self.now)
+        self.device.fail = True
+        self.report(A=5)
+        self.assertEqual(self.alert()["kind"], "TOO_MANY")
+
+
+class TestCameraMoved(DoseTestBase):
+    def blocked(self, slots):
+        self.dm.heartbeat({"monitoring": True, "states": {}, "details": {"view_blocked": slots}}, self.now)
+
+    def test_all_boxes_blocked_for_a_while_means_the_camera_moved(self):
+        self.blocked(SLOTS)
+        self.advance(seconds=5, tick=False)
+        self.blocked(SLOTS)
+        self.assertNotIn("CAMERA_MOVED", self.kinds())
+        self.advance(seconds=6, tick=False)
+        self.blocked(SLOTS)
+        self.blocked(SLOTS)
+        self.assertEqual(self.kinds().count("CAMERA_MOVED"), 1)
+        self.assertEqual(self.dm.current_patient_alert(self.now)["kind"], "CAMERA_MOVED")
+
+    def test_one_hand_on_one_box_is_not_a_move(self):
+        self.blocked(["A"])
+        self.advance(seconds=30, tick=False)
+        self.blocked(["A"])
+        self.assertNotIn("CAMERA_MOVED", self.kinds())
 
 
 class TestScheduleEdgeCases(DoseTestBase):

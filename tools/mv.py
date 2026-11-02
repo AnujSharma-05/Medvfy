@@ -8,11 +8,13 @@
     .\\mv box check|test|off     check the ESP32, light A-D in turn, all lights off
     .\\mv box diag               12 s wiring check with a guide to what you should see
     .\\mv box light A            light one compartment (no dose)
+    .\\mv box alarm | warn       play the too-many-pills alarm / the one-at-a-time advisory
 
     .\\mv cam snapshot           save the current camera image (raw + annotated)
-    .\\mv cam regions preview    numbered groups the camera can find (with colours); changes nothing
+    .\\mv cam regions preview    numbered pen-drawn squares the camera can find (or, with none drawn,
+                                medicine groups), with their contents' colour; changes nothing
     .\\mv cam regions auto [A=1 B=3 C=2 D=4]   use them; letters follow the preview numbers if given,
-                                otherwise the 4 largest groups in reading order
+                                otherwise reading order (top row left to right, then the next row)
     .\\mv cam regions set A=x,y,w,h B=... C=... D=...
     .\\mv cam empty              sheet cleared: save the "empty" photos
     .\\mv cam loaded [A=7 B=7 C=4 D=4]   sheet loaded: save the "loaded" photos and start monitoring;
@@ -223,8 +225,8 @@ def cmd_up(args: list[str]) -> None:
         # reports pause, and starting a second camera service would fight it for the webcam.
         if _managed_pid("camera"):
             print(f"Camera service already running (pid {_managed_pid('camera')}).")
-        elif camera_running(api("GET", "/api/status")) or any(
-                "camera_service" in c or "camera_inspector" in c for _, c in _foreign_processes()):
+        elif any("camera_service" in c or "camera_inspector" in c for _, c in _foreign_processes()):
+            # Judged by processes only: a camera stopped seconds ago still has a fresh report.
             print("A camera program started outside mv is running; leaving it alone.")
         else:
             print("Starting camera service: the webcam will be on and watching the sheet continuously.")
@@ -291,7 +293,7 @@ def cmd_status(args: list[str]) -> None:
     d, dev = s["doses"], s["device"]
     cam = d["camera"]
     det = cam.get("details") or {}
-    print(f"Server   : running at {BASE}  (caretaker app on port {settings().get('care_port', 5050)})")
+    print(f"Server   : running at {BASE}  (caretaker app: {BASE}/care)")
     box = f"{dev.get('mode')}"
     if dev.get("mode") == "serial":
         box += f" on {dev.get('port')}" + (f"  ERROR: {dev['last_error']}" if dev.get("last_error") else "  ok")
@@ -311,6 +313,8 @@ def cmd_status(args: list[str]) -> None:
               f"loaded photo {'yes' if det.get('has_loaded_photo') else 'NO'}, "
               f"empty photo {'yes' if det.get('has_empty_photo') else 'NO'}"
               + (f", waiting for still scene to {det['waiting_for']}" if det.get("waiting_for") else ""))
+        if det.get("view_blocked"):
+            print(f"           view blocked (something on the box edge): {', '.join(det['view_blocked'])}")
         trial = det.get("trial")
         if trial:
             stage = "GO (act now)" if trial["ready"] else "checking start, hands off"
@@ -367,7 +371,7 @@ Unplug USB before moving any wire. Run .\\mv box diag again after each fix."""
 
 def cmd_box(args: list[str]) -> None:
     if not args:
-        raise Fail("Use: box check | test | diag | light A | off")
+        raise Fail("Use: box check | test | diag | light A | alarm | warn | off")
     action = args[0]
     via_server = server_up()
     if via_server and api("GET", "/api/status")["device"].get("mode") != "serial":
@@ -411,11 +415,18 @@ def cmd_box(args: list[str]) -> None:
         elif action == "light" and len(args) > 1:
             light(args[1].upper())
             print(f"LED {args[1].upper()} on (beeped). Turn off with: .\\mv box off")
+        elif action in ("alarm", "warn"):
+            if via_server:
+                api("POST", "/api/device/sound", {"kind": action})
+            else:
+                dev.sound(action)
+            print("Played the " + ("urgent ALARM (too many pills, ~3 s siren)" if action == "alarm"
+                                   else "WARN advisory (two slow low beeps)") + "; lights unchanged.")
         elif action == "off":
             off()
             print("All LEDs off (open doses stay open).")
         else:
-            raise Fail("Use: box check | test | diag | light A | off")
+            raise Fail("Use: box check | test | diag | light A | alarm | warn | off")
     finally:
         if dev is not None and dev._conn is not None:
             dev._conn.close()

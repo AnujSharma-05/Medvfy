@@ -118,6 +118,19 @@ class TestCountTracker(unittest.TestCase):
         self.assertEqual(t.update(4.05, 2.0), (5, 4))
         self.assertEqual(t.confirmed, 4)
 
+    def test_put_back_needs_a_clear_reading(self):
+        """Regression (live): after one of 4 was taken, the 3 left read 3.6-3.7 once a hand had
+        shuffled them, and the count went back to 4, hiding the dose."""
+        t = CountTracker(2, 2.0)
+        t.reset(4)
+        t.update(3.33, 0.0)
+        self.assertEqual(t.update(3.34, 2.0), (4, 3))   # taking one: normal tolerance
+        for i, est in enumerate([3.61, 3.69, 3.72, 3.66, 3.7]):
+            self.assertIsNone(t.update(est, 3.0 + i))
+        self.assertEqual(t.confirmed, 3)
+        t.update(3.95, 10.0)
+        self.assertEqual(t.update(4.05, 12.0), (3, 4))  # really put back: accepted
+
     def test_brief_dip_does_not_count(self):
         t = CountTracker(2, 2.0)
         t.reset(5)
@@ -136,6 +149,29 @@ class TestCountTracker(unittest.TestCase):
         t.update(4.0, 2.0)
         self.assertIsNone(t.update(4.0, 2.5))
         self.assertEqual(t.update(4.0, 3.0), (5, 4))
+
+    def test_crumpled_removal_with_demo_tolerance(self):
+        """config/tuning.json: a crumpled piece taken out of 4 can leave 3.4 units visible."""
+        t = CountTracker(2, 1.0, max_rounding_error=0.45)
+        t.reset(4)
+        t.update(3.44, 0.0)
+        self.assertEqual(t.update(3.42, 1.0), (4, 3))
+        strict = CountTracker(2, 1.0)
+        strict.reset(4)
+        strict.update(3.44, 0.0)
+        self.assertIsNone(strict.update(3.42, 1.0))  # default 0.35: never decides
+
+    def test_clearly_fewer_but_between_counts_decides_after_a_while(self):
+        """Live: 3 of 4 taken from B, the big crumpled piece left read 1.38-1.50 for good."""
+        t = CountTracker(2, 1.0, 0.45, 0.2, between_seconds=3.0)
+        t.reset(4)
+        readings = [1.41, 1.47, 1.38, 1.50, 1.44, 1.48, 1.43]
+        results = [t.update(est, i * 0.5) for i, est in enumerate(readings)]
+        self.assertEqual(results[:6], [None] * 6)           # not before 3 s
+        self.assertEqual(results[6], (4, 1))
+        up = CountTracker(2, 1.0, 0.45, 0.2, between_seconds=3.0)
+        up.reset(1)
+        self.assertTrue(all(up.update(1.6, i * 0.5) is None for i in range(20)))  # never upwards
 
 
 if __name__ == "__main__":

@@ -73,6 +73,9 @@ class DoseConfig:
     camera_timeout_seconds: float = 30.0  # No heartbeat for this long = camera offline
     put_back_grace_minutes: float = 10.0  # A return this soon after removal is suspicious
     low_stock_pills: int = 2              # "Refill soon" when a counted compartment gets this low
+    multi_window_seconds: float = 20.0    # Takes from 2+ compartments this close = "one at a time"
+    patient_alert_seconds: float = 90.0   # How long an alert stays on the patient screen
+    moved_after_seconds: float = 10.0     # All compartments blocked this long = camera/sheet moved
 
     @classmethod
     def from_settings(cls, settings: dict[str, Any]) -> "DoseConfig":
@@ -84,6 +87,8 @@ class DoseConfig:
             camera_timeout_seconds=float(cfg.get("camera_timeout_seconds", d.camera_timeout_seconds)),
             put_back_grace_minutes=float(cfg.get("put_back_grace_minutes", d.put_back_grace_minutes)),
             low_stock_pills=int(cfg.get("low_stock_pills", d.low_stock_pills)),
+            multi_window_seconds=float(cfg.get("multi_window_seconds", d.multi_window_seconds)),
+            patient_alert_seconds=float(cfg.get("patient_alert_seconds", d.patient_alert_seconds)),
         )
 
 
@@ -149,6 +154,10 @@ class DoseManager:
         }
         self.camera: dict[str, Any] = {"last_seen": None, "monitoring": False, "online": False}
         self._camera_alerted_offline = False
+        # What the patient screen must say now (too many pills, wrong box, one at a time).
+        self.patient_alert: dict[str, Any] | None = None
+        self._recent_takes: dict[str, datetime] = {}
+        self._all_blocked_since: datetime | None = None  # compartment -> last time medicine was taken
         self._load_sessions()
 
     # ------------------------------------------------------------------ helpers
@@ -175,6 +184,51 @@ class DoseManager:
             compartment_id=compartment or (session.compartment_id if session else None),
             session_id=session.id if session else None,
         )
+
+    def _alert_patient(self, kind: str, en: str, hi: str, now: datetime, sound: str | None = None) -> None:
+        """Show a message on the patient screen and, for `sound` ('alarm' or 'warn'), play that
+        pattern on the pill box. A device failure never blocks the alert on screen."""
+        self.patient_alert = {"kind": kind, "en": en, "hi": hi, "at": now.isoformat(timespec="seconds")}
+        if sound:
+            play = getattr(self.device, "sound", None)
+            try:
+                if play is not None:
+                    play(sound)
+            except Exception as exc:
+                self._notify(None, "Pill box buzzer not responding",
+                             f"Could not sound the {sound} for {kind}: {exc}.", WARNING, "DEVICE_ERROR")
+
+    def current_patient_alert(self, now: datetime | None = None) -> dict[str, Any] | None:
+        now = self._now(now)
+        a = self.patient_alert
+        if a and now - datetime.fromisoformat(a["at"]) <= timedelta(seconds=self.config.patient_alert_seconds):
+            return a
+        return None
+
+    def acknowledge_patient_alert(self) -> None:
+        self.patient_alert = None
+
+    def _check_multi(self, compartment: str, now: datetime) -> None:
+        """Medicine taken from two or more compartments close together: ask for one at a time.
+        The camera judges each compartment separately, so two hands in two boxes at once is
+        exactly what makes the result hard to trust."""
+        window = timedelta(seconds=self.config.multi_window_seconds)
+        self._recent_takes = {c: t for c, t in self._recent_takes.items() if now - t <= window}
+        self._recent_takes[compartment] = now
+        if len(self._recent_takes) < 2:
+            return
+        boxes = " and ".join(sorted(self._recent_takes))
+        self._notify(None, f"Medicine taken from {boxes} at once",
+                     f"Medicine was taken from compartments {boxes} within "
+                     f"{self.config.multi_window_seconds} s. The patient was asked to take one at a time.",
+                     WARNING, "MULTI_COMPARTMENT", compartment=compartment)
+        self._alert_patient("MULTI_COMPARTMENT", f"Please take one medicine at a time ({boxes}).",
+                            f"कृपया एक बार में एक ही दवा लीजिए ({boxes})।", now, sound="warn")
+
+    def _wrong_box_alert(self, wrong: str, targets: str, now: datetime) -> None:
+        # No extra sound: re-pointing the light at the right box beeps again.
+        self._alert_patient("WRONG_COMPARTMENT", f"Wrong box! Not {wrong}. Put it back and take from box {targets}.",
+                            f"गलत डिब्बा! {wrong} नहीं। वापस रखिए और डिब्बे {targets} से लीजिए।", now)
 
     def _device_remind(self, session: DoseSession, now: datetime) -> None:
         try:
@@ -461,6 +515,29 @@ class DoseManager:
             for compartment, state in (payload.get("states") or {}).items():
                 self.record_state(str(compartment).upper(), str(state), now, source="heartbeat")
             self._check_camera(now)
+            self._check_view(now)
+
+    def _check_view(self, now: datetime) -> None:
+        """Every compartment 'view blocked' for a while is not a hand: the camera or the sheet
+        moved after calibration, and no dose can be verified until the set-up is redone.
+        (Live demo, 2 Nov: this froze every dose silently.)"""
+        blocked = set((self.camera.get("details") or {}).get("view_blocked") or [])
+        if not self.camera.get("monitoring") or blocked != set(self.compartments):
+            self._all_blocked_since = None
+            self.camera["moved"] = False
+            return
+        if self._all_blocked_since is None:
+            self._all_blocked_since = now
+        if now - self._all_blocked_since < timedelta(seconds=self.config.moved_after_seconds):
+            return
+        if not self.camera.get("moved"):
+            self.camera["moved"] = True
+            self._notify(None, "Camera or sheet moved: doses cannot be checked",
+                         "Every compartment looks blocked. Fix the camera and sheet in place, then redo the "
+                         "set-up: mv cam regions auto, mv cam empty (sheet empty), mv cam loaded A=.. B=..",
+                         CRITICAL, "CAMERA_MOVED")
+            self._alert_patient("CAMERA_MOVED", "The camera cannot see the boxes. Please call your caretaker.",
+                                "कैमरा डिब्बे नहीं देख पा रहा है। कृपया देखभाल करने वाले को बुलाइए।", now)
 
     def record_state(self, compartment: str, state: str, now: datetime | None = None,
                      source: str = "observation") -> None:
@@ -486,6 +563,8 @@ class DoseManager:
             if before == after:
                 return
             self._on_category_change(compartment, before, after, now, source)
+            if after in ("removed", "changed"):
+                self._check_multi(compartment, now)
             self._save()
 
     def _on_category_change(self, compartment: str, before: str, after: str, now: datetime, source: str) -> None:
@@ -522,7 +601,8 @@ class DoseManager:
             self._notify(others[-1], f"Wrong compartment: {compartment}",
                          f"Compartment {compartment} was opened, but the medicine due now is in "
                          f"compartment {targets}.", WARNING, "WRONG_COMPARTMENT", compartment=compartment)
-            self._refresh_device(now)  # Re-point the light at the right compartment
+            self._wrong_box_alert(compartment, targets, now)
+            self._refresh_device(now)  # Re-point the light (and beep) at the right compartment
             return
 
         if after == "loaded" and before == "removed":
@@ -565,6 +645,7 @@ class DoseManager:
                 return
             if count < previous:
                 self._pills_removed(compartment, previous - count, count, now, source)
+                self._check_multi(compartment, now)
             else:
                 self._pills_added(compartment, count - previous, count, now)
             self._check_stock(compartment, entry, now)
@@ -586,6 +667,10 @@ class DoseManager:
                 self._notify(own, f"Too many pills taken from compartment {compartment}",
                              f"{own.removed_count} pills were taken, the dose is {own.dose_size}. Please check "
                              "(the camera saw them removed; it cannot see them swallowed).", CRITICAL, "TOO_MANY")
+                self._alert_patient("TOO_MANY", f"Stop! You took {own.removed_count} pills from box {compartment}. "
+                                    f"The dose is {own.dose_size}. Put the extra back.",
+                                    f"रुकिए! डिब्बे {compartment} से {own.removed_count} गोलियाँ ली गईं, खुराक "
+                                    f"{own.dose_size} है। ज़्यादा गोली वापस रखिए।", now, sound="alarm")
             else:
                 self._notify(own, f"Dose taken from compartment {compartment}",
                              f"{pills.capitalize()} removed at {fmt_time(now)}; {left} left. (The camera saw "
@@ -604,7 +689,8 @@ class DoseManager:
             self._notify(others[-1], f"Wrong compartment: {compartment}",
                          f"{pills.capitalize()} taken from compartment {compartment}, but the medicine due now "
                          f"is in compartment {targets}.", WARNING, "WRONG_COMPARTMENT", compartment=compartment)
-            self._refresh_device(now)
+            self._wrong_box_alert(compartment, targets, now)
+            self._refresh_device(now)  # Re-point the light (and beep) at the right compartment
             return
 
         recent = self._recent_removed(compartment, now)
@@ -614,6 +700,10 @@ class DoseManager:
             self._notify(recent, f"Extra pills taken from compartment {compartment}",
                          f"{pills.capitalize()} more taken right after the dose ({recent.removed_count} in total, "
                          f"dose {recent.dose_size}).", CRITICAL, "TOO_MANY")
+            self._alert_patient("TOO_MANY", f"Stop! You already took your dose from box {compartment}. "
+                                "Put the extra back.",
+                                f"रुकिए! डिब्बे {compartment} की खुराक पहले ही ले ली है। ज़्यादा गोली वापस रखिए।",
+                                now, sound="alarm")
             return
         self._notify(None, f"Pills taken outside dose time: {compartment}",
                      f"{pills.capitalize()} taken from compartment {compartment} at {fmt_time(now)}; no dose "

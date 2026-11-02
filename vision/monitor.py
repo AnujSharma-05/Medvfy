@@ -25,7 +25,7 @@ import cv2
 import numpy as np
 
 from vision.comparator import VisualComparator
-from vision.content import CountTracker, medicine_mask
+from vision.content import CountTracker, crosses_edge, crosses_line, inside_mask, intrusion_mask, medicine_mask
 from vision.frame_quality import FrameQualityAssessor
 from vision.reference_store import ReferenceStore
 from vision.state_machine import CompartmentStateMachine, StateTransition
@@ -52,6 +52,13 @@ class MonitorConfig:
     content_change_threshold: float = 0.30  # area off by 30% or more = clearly changed
     confirm_observations: int = 2
     confirm_seconds: float = 2.0
+    # Counting tolerance: how far from a whole number an estimate may be and still count
+    # (going down / going up), and how fast the area of one pill follows the pieces actually
+    # in the box while its count is stable (crumpled pieces change their visible area).
+    count_tolerance: float = 0.35
+    count_tolerance_up: float = 0.2
+    unit_follow: float = 0.0
+    count_between_seconds: float = 0.0  # see CountTracker.between_seconds
 
     @classmethod
     def from_settings(cls, settings: dict[str, Any]) -> "MonitorConfig":
@@ -70,6 +77,10 @@ class MonitorConfig:
                                                         defaults.content_change_threshold)),
             confirm_observations=int(settings.get("debounce_frames", defaults.confirm_observations)),
             confirm_seconds=float(settings.get("confirm_seconds", defaults.confirm_seconds)),
+            count_tolerance=float(settings.get("count_tolerance", defaults.count_tolerance)),
+            count_tolerance_up=float(settings.get("count_tolerance_up", defaults.count_tolerance_up)),
+            unit_follow=float(settings.get("unit_follow", defaults.unit_follow)),
+            count_between_seconds=float(settings.get("count_between_seconds", defaults.count_between_seconds)),
         )
 
 
@@ -121,7 +132,33 @@ class ContinuousMonitor:
         self._ref_key: Any = object()
         self._ref_stats: dict[str, dict[str, Any]] = {}
         self.counters: dict[str, CountTracker] = {}
+        self.units: dict[str, float] = {}  # current area of one pill (follows crumpled pieces)
         self.last_count_changes: list[tuple[str, int, int]] = []
+        self.last_blocked: set[str] = set()
+        self.inside: dict[str, np.ndarray] = {}  # drawn compartments: mask of the square in its crop
+
+    def set_outlines(self, outlines: dict[str, list[list[int]]] | None) -> None:
+        """Drawn compartments: only what lies inside each square counts, and the guard looks for
+        things crossing the pen line. Without outlines, the whole box counts (plain regions)."""
+        self.inside = {s: inside_mask(self.rois[s], pts) for s, pts in (outlines or {}).items()
+                       if self.rois and s in self.rois}
+        self._ref_key = object()  # recompute the per-compartment reference areas
+
+    def medicine(self, slot: str, crop: np.ndarray, empty: np.ndarray | None) -> np.ndarray:
+        """Medicine mask of a compartment crop, limited to its drawn square when it has one."""
+        mask = medicine_mask(crop, empty)
+        inside = self.inside.get(slot)
+        if inside is not None and inside.shape == mask.shape:
+            mask = cv2.bitwise_and(mask, inside)
+        return mask
+
+    def view_blocked(self, slot: str, crop: np.ndarray, empty: np.ndarray | None) -> bool:
+        """Something reaching into the compartment (a hand held still, a sleeve)."""
+        intrusion = intrusion_mask(crop, empty)
+        inside = self.inside.get(slot)
+        if inside is not None and inside.shape == intrusion.shape:
+            return crosses_line(intrusion, inside)
+        return crosses_edge(intrusion)
 
     def reset(self) -> None:
         """Forget timing and motion history (call after calibration, ROI, or camera changes)."""
@@ -224,7 +261,7 @@ class ContinuousMonitor:
             exp, emp = self.ref_store.get_expected(slot), self.ref_store.get_empty(slot)
             if exp is None or emp is None or exp.shape != emp.shape:
                 continue
-            mask = medicine_mask(exp, emp)
+            mask = self.medicine(slot, exp, emp)
             area = int(np.count_nonzero(mask))
             n = int(counts.get(slot) or 0)
             stats[slot] = {"area": area, "color": _mean_color(exp, mask), "count": n or None,
@@ -232,9 +269,12 @@ class ContinuousMonitor:
         self._ref_key, self._ref_stats = key, stats
         # New calibration: counts start from what was declared, nothing to confirm yet.
         self.counters = {
-            slot: CountTracker(self.config.confirm_observations, self.config.confirm_seconds)
+            slot: CountTracker(self.config.confirm_observations, self.config.confirm_seconds,
+                               self.config.count_tolerance, self.config.count_tolerance_up,
+                               self.config.count_between_seconds)
             for slot, st in stats.items() if st["unit"]
         }
+        self.units = {slot: stats[slot]["unit"] for slot in self.counters}
         for slot, counter in self.counters.items():
             counter.reset(stats[slot]["count"])
         return stats
@@ -249,6 +289,19 @@ class ContinuousMonitor:
 
     def uses_content(self) -> bool:
         return self.config.evidence != "pixels" and bool(self.reference_stats())
+
+    def _follow_unit(self, slot: str, area: int, estimate: float, calibrated: float) -> None:
+        """While the confirmed count holds, let one pill's area follow what is really there.
+
+        Crumpled paper pieces look bigger or smaller after a hand touches them; the confirmed
+        count is known, so area / count is the current size of one piece. Only near-matching
+        readings are used (a removal reads a whole pill lower and is never learnt from).
+        """
+        rate, confirmed = self.config.unit_follow, self.counters[slot].confirmed
+        if rate <= 0 or not confirmed or abs(estimate - confirmed) > 0.3:
+            return
+        unit = (1 - rate) * self.units[slot] + rate * area / confirmed
+        self.units[slot] = min(calibrated * (1 + UNIT_FOLLOW_LIMIT), max(calibrated * (1 - UNIT_FOLLOW_LIMIT), unit))
 
     def evaluate(
         self,
@@ -267,6 +320,7 @@ class ContinuousMonitor:
         stats = self.reference_stats() if self.config.evidence != "pixels" else {}
         now = observed_at if observed_at is not None else 0.0
         self.last_count_changes = []
+        self.last_blocked = set()
 
         transitions: list[StateTransition] = []
         for slot in self.slots:
@@ -279,11 +333,17 @@ class ContinuousMonitor:
             extra: dict[str, Any] = {"quality": quality.reason, "is_blurry": is_blurry,
                                      "blur_score": quality.blur_score, "brightness": quality.brightness_score}
             ref = stats.get(slot)
+            slot_blocked = False
 
             if (ref and ref["area"] > 0 and not evidence_missing and empty_crop is not None
                     and current_crop.shape == empty_crop.shape):
                 # Content evidence: how much medicine, and is it the same colour as calibrated.
-                mask = medicine_mask(current_crop, empty_crop)
+                mask = self.medicine(slot, current_crop, empty_crop)
+                # Something crossing the compartment's border (a hand held still, a sleeve): the
+                # view of this compartment is blocked, so no count or decision is taken from it.
+                if self.view_blocked(slot, current_crop, empty_crop):
+                    slot_blocked = True
+                    self.last_blocked.add(slot)
                 area = int(np.count_nonzero(mask))
                 ratio = area / ref["area"]
                 shift = 0.0
@@ -294,14 +354,17 @@ class ContinuousMonitor:
                 match_t, change_t = self.config.content_match_threshold, self.config.content_change_threshold
                 extra.update({"composite_diff": round(diff_expected, 4), "area": area,
                               "area_ratio": round(ratio, 3), "color_shift": round(shift, 1),
-                              "evidence": "content"})
+                              "evidence": "content", "edge_blocked": slot_blocked})
                 counter = self.counters.get(slot)
                 if counter is not None:
-                    estimate = area / ref["unit"]
+                    estimate = area / self.units.get(slot, ref["unit"])
                     extra["count_estimate"] = round(estimate, 2)
-                    change = counter.update(None if is_blurry else estimate, now)
+                    usable = not (is_blurry or slot_blocked)
+                    change = counter.update(estimate if usable else None, now)
                     if change is not None:
                         self.last_count_changes.append((slot, change[0], change[1]))
+                    elif usable:
+                        self._follow_unit(slot, area, estimate, ref["unit"])
             else:
                 metrics_exp = self.comparator.compare(expected_crop, current_crop)
                 diff_expected = None if evidence_missing else metrics_exp.composite_diff
@@ -320,6 +383,7 @@ class ContinuousMonitor:
                     diff_from_expected=diff_expected,
                     diff_from_empty=diff_empty,
                     is_blurry=is_blurry,
+                    is_occluded=slot_blocked,
                     change_threshold=change_t,
                     match_threshold=match_t,
                     extra_metrics=extra,
@@ -327,6 +391,9 @@ class ContinuousMonitor:
                 )
             )
         return transitions
+
+
+UNIT_FOLLOW_LIMIT = 0.3  # one pill's area may drift at most 30% from the calibrated one
 
 
 def _mean_color(img: np.ndarray, mask: np.ndarray) -> np.ndarray:
