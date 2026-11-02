@@ -8,9 +8,11 @@ Two presenters: **P1** speaks and explains; **P2** handles the pill box and type
    one thing that breaks the demo.
 2. Plug in the ESP32 (USB). Double-click `live_demo.bat`. Three browser tabs open: console, patient, caretaker.
 3. If the camera or sheet moved since the last set-up: run `setup_camera.bat` (a guided 2-minute set-up).
-4. `mv status` must show every box as `A=n/n` with **no** "view blocked" line.
-5. Log in to the caretaker tab. Put the patient tab on the second screen, if there is one.
-6. Refill counts to what is written in `mv status` before every new evaluator.
+4. After the camera has been on for a minute: `mv cam loaded A=4 B=4 C=4 D=3` (real counts), so
+   the photo matches tonight's exposure.
+5. `mv status` must show every box as `A=n/n` with **no** "view blocked" line.
+6. Log in to the caretaker tab. Put the patient tab on the second screen, if there is one.
+7. Refill counts to what is written in `mv status` before every new evaluator.
 
 ## 1. The problem (P1, 45 s)
 > "Elderly patients often forget doses, take a double dose, or take from the wrong box. Families
@@ -71,4 +73,5 @@ Then `mv down` when the session ends.
 | Count shows `?`, or a dose does not close after 10 s | Hands fully out of view; wait 3 s; check `mv status` camera estimates |
 | No LED or buzzer | `mv box check`; replug the USB, then `mv down` and `live_demo.bat` |
 | Counts differ from the sheet after refilling | `mv cam loaded A=4 B=4 C=4 D=3` (the real counts) |
+| Webcam replugged or restarted, and estimates are off by 0.3-0.6 | Wait 1 min, hands away, then `mv cam loaded A=.. B=.. C=.. D=..` with the real counts (auto exposure changed) |
 | Set-up went wrong | `restore_camera.bat` (lists saved calibrations) |

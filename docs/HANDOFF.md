@@ -101,3 +101,13 @@ DONE (commit after 7bb10e7): ALL boxes blocked for > 10 s now raises a critical 
   "view blocked"). Squares are found fine in the new position; set-up must be redone by the user.
 - Demo script: docs/DEMO_SCRIPT.md. Evaluator questions: docs/EVALUATOR_QA.md.
 - 23:45: set-up redone (regions auto, empty, loaded A=4 B=4 C=4 D=3); estimates 4.09/4.05/4.06/2.98, no box blocked.
+
+## 2 Nov 23:50-00:10: why doses were not detected (fixed)
+- Counting gate saw glinting crumpled foil as motion (20% of still frames > 2%), so counts were
+  never confirmed (A read 3.0, stayed 4). Fix: smooth before differencing (vision/frame_quality.py).
+- Restarting the camera service reset counts to the set-up values (false PUT_BACK). Fix:
+  resume_counts() takes the server's counts at start.
+- Webcam replug resets auto exposure/white balance: estimates drift 0.3-0.6. Colour cast is now
+  evened out; after a replug, retake only the loaded photo (`mv cam loaded ...`).
+- software_demo.bat = live_demo.bat with a simulated box (same software path).
+- Webcam hung once when reopened quickly by two programs: unplug/replug fixed it.

@@ -48,6 +48,10 @@ def _differences(crop: np.ndarray, empty: np.ndarray) -> tuple[np.ndarray, np.nd
     ref_l, cur_l = float(np.median(ref[..., 0])), float(np.median(cur[..., 0]))
     if cur_l > 1:
         cur[..., 0] *= ref_l / cur_l
+    # Even out a colour cast the same way (webcam white balance resets when it is replugged:
+    # measured live, paper turned slightly blue and counts read 4.65 instead of 4).
+    for ch in (1, 2):
+        cur[..., ch] += float(np.median(ref[..., ch])) - float(np.median(cur[..., ch]))
     chroma = np.sqrt((cur[..., 1] - ref[..., 1]) ** 2 + (cur[..., 2] - ref[..., 2]) ** 2)
     light = np.abs(cur[..., 0] - ref[..., 0])
     return chroma, light
