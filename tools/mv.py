@@ -292,7 +292,7 @@ def cmd_status(args: list[str]) -> None:
     d, dev = s["doses"], s["device"]
     cam = d["camera"]
     det = cam.get("details") or {}
-    print(f"Server   : running at {BASE}  (caretaker app on port {settings().get('care_port', 5050)})")
+    print(f"Server   : running at {BASE}  (caretaker app: {BASE}/care)")
     box = f"{dev.get('mode')}"
     if dev.get("mode") == "serial":
         box += f" on {dev.get('port')}" + (f"  ERROR: {dev['last_error']}" if dev.get("last_error") else "  ok")

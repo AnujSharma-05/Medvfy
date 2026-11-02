@@ -57,10 +57,10 @@ fi
 step "3/6 Opening the apps"
 open_url "http://127.0.0.1:5000/console"   # admin console
 open_url "http://127.0.0.1:5000/patient"   # patient (father) screen
-open_url "http://127.0.0.1:5050/"          # caretaker (son) app: sign in with your password
+open_url "http://127.0.0.1:5000/care"      # caretaker (son) app: sign in with your password
 echo "Admin console : http://127.0.0.1:5000/console"
 echo "Patient screen: http://127.0.0.1:5000/patient"
-echo "Caretaker app : http://127.0.0.1:5050/"
+echo "Caretaker app : http://127.0.0.1:5000/care"
 
 step "4/6 Camera set-up"
 mv_ status
