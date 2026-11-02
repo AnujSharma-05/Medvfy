@@ -259,6 +259,17 @@ class TestOutsideDoseTimes(DoseTestBase):
         self.camera_sees("D", "REMOVAL_DETECTED")
         self.assertIn("UNSCHEDULED_REMOVAL", self.kinds())
 
+    def test_camera_reset_to_unknown_clears_known_state_silently(self):
+        self.all_loaded()
+        self.heartbeat({s: "UNKNOWN" for s in SLOTS})  # regions redrawn: calibration gone
+        self.assertEqual({v["state"] for v in self.dm.compartment_states.values()}, {"UNKNOWN"})
+        self.assertEqual(self.kinds(), [])
+        session = self.dm.start_session("A", self.now)
+        self.assertNotIn("NOT_LOADED", session.flags)
+        # Recalibrated as loaded again: no "refilled"/"put back" noise from UNKNOWN -> loaded
+        self.all_loaded()
+        self.assertEqual([k for k in self.kinds() if k not in ("DOSE_DUE",)], [])
+
     def test_first_observation_after_start_does_not_alert(self):
         # Backend just started: it never saw D loaded, so an empty D is not "a removal".
         self.camera_sees("D", "REMOVAL_DETECTED")
@@ -270,6 +281,112 @@ class TestOutsideDoseTimes(DoseTestBase):
         self.assertEqual(self.dm.cancel_all(self.now), 1)
         self.assertEqual(self.dm.sessions[-1].outcome, "CANCELLED")
         self.assertEqual(self.device.calls[-1], ("stop", None))
+
+
+class TestCountedDoses(DoseTestBase):
+    """Compartments holding a supply (e.g. a week of pills): a dose = the count dropping by the dose size."""
+
+    def setUp(self):
+        super().setUp()
+        self.counts = {"A": 7, "B": 7, "C": 2, "D": 7}
+        self.report()
+
+    def report(self, **changes):
+        self.counts.update(changes)
+        self.dm.heartbeat({"monitoring": True, "states": {s: "EXPECTED_PRESENT" for s in SLOTS},
+                           "counts": dict(self.counts), "loaded_counts": {s: 7 for s in SLOTS}}, self.now)
+
+    def notes(self, kind):
+        return [n for n in self.notifier.recent(200) if n["kind"] == kind]
+
+    def test_baseline_is_silent_and_low_stock_is_flagged(self):
+        self.assertEqual(self.dm.compartment_states["A"]["count"], 7)
+        self.report(D=6)  # someone takes from D outside any dose
+        self.assertEqual(len(self.notes("UNSCHEDULED_REMOVAL")), 1)
+
+    def test_one_pill_dose_taken(self):
+        session = self.dm.start_session("A", self.now)
+        self.assertEqual((session.start_count, session.dose_size), (7, 1))
+        self.report(A=6)
+        self.assertEqual(session.outcome, "REMOVED")
+        self.assertIn("6 left", self.notes("DOSE_REMOVED")[0]["message"])
+        self.assertNotIn("TOO_MANY", " ".join(session.flags))
+
+    def test_two_taken_instead_of_one_is_critical(self):
+        session = self.dm.start_session("A", self.now)
+        self.report(A=5)
+        self.assertEqual(session.outcome, "REMOVED")
+        self.assertIn("TOO_MANY:2", session.flags)
+        self.assertEqual(self.notes("TOO_MANY")[0]["level"], "critical")
+
+    def test_extra_pill_right_after_the_dose(self):
+        session = self.dm.start_session("A", self.now)
+        self.report(A=6)
+        self.advance(minutes=2, tick=False)
+        self.report(A=5)
+        self.assertIn("TOO_MANY:2", session.flags)
+
+    def test_two_pill_dose_in_steps(self):
+        session = self.dm.start_session("B", self.now, dose_size=2)
+        self.report(B=6)
+        self.assertEqual(session.status, ACTIVE)
+        self.assertIn("PARTIAL", session.flags)
+        self.report(B=5)
+        self.assertEqual(session.outcome, "REMOVED")
+
+    def test_taken_then_put_back_during_the_dose(self):
+        session = self.dm.start_session("B", self.now, dose_size=2)
+        self.report(B=6)
+        self.report(B=7)  # put back
+        self.assertIn("PUT_BACK", session.flags)
+        self.assertEqual((session.status, session.removed_count), (ACTIVE, 0))
+
+    def test_put_back_after_the_dose_closed(self):
+        session = self.dm.start_session("A", self.now)
+        self.report(A=6)
+        self.advance(minutes=3, tick=False)
+        self.report(A=7)
+        self.assertIn("PUT_BACK", session.flags)
+        self.assertEqual(len(self.notes("PUT_BACK")), 1)
+
+    def test_wrong_compartment_by_count(self):
+        session = self.dm.start_session("A", self.now)
+        self.report(D=6)
+        self.assertIn("WRONG_COMPARTMENT:D", session.flags)
+        self.assertEqual(session.status, ACTIVE)
+
+    def test_not_enough_pills_and_running_out(self):
+        session = self.dm.start_session("C", self.now, dose_size=3)
+        self.assertIn("NOT_LOADED", session.flags)
+        self.dm.cancel_all(self.now)
+        session = self.dm.start_session("C", self.now)
+        self.report(C=1)
+        self.assertEqual(session.outcome, "REMOVED")
+        low = self.notes("LOW_STOCK")
+        self.assertEqual(len(low), 1)
+        self.report(C=0)
+        self.assertEqual(len(self.notes("LOW_STOCK")), 1)  # alerted once, not on every pill
+
+    def test_refill_and_recalibration_are_silent(self):
+        self.report(C=7)  # refilled with no dose around
+        self.assertEqual(len(self.notes("REFILLED")), 1)
+        self.dm.mark_recalibrated(self.now)
+        self.report(A=3)  # first report after recalibration only sets the baseline
+        self.assertEqual(self.notes("UNSCHEDULED_REMOVAL"), [])
+
+    def test_states_do_not_drive_counted_compartments(self):
+        session = self.dm.start_session("A", self.now)
+        # Area-based state says "changed" after a pill is gone: must not flag PARTIAL by itself
+        self.dm.record_state("A", "PARTIAL_OR_WRONG", self.now)
+        self.assertEqual(session.flags, [])
+        self.assertEqual(session.status, ACTIVE)
+
+    def test_schedule_carries_pills_per_dose(self):
+        self.schedule.add({"time": "08:00", "compartment_id": "B", "pills_per_dose": 2})
+        self.advance(minutes=1)
+        session = self.dm.active_sessions()[0]
+        self.assertEqual(session.dose_size, 2)
+        self.assertIn("2 pills", self.notes("DOSE_DUE")[-1]["message"])
 
 
 class TestScheduleEdgeCases(DoseTestBase):

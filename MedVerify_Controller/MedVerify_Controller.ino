@@ -6,7 +6,11 @@
     A / B / C / D : simulate a scheduled reminder for that compartment
     TEST          : test all four LEDs and the buzzer
     STOP          : turn all compartment LEDs and buzzer off
+    DIAG          : 12 s wiring check (on-board LED + all LEDs + long tone)
+    PINS          : show which GPIO drives what
     HELP          : show commands
+
+  The on-board LED (GPIO2) blinks 3 times at boot and flashes briefly on every command.
 
   Hardware assumptions:
     LED A -> GPIO16 via 220-330 ohm resistor
@@ -27,6 +31,9 @@ const uint8_t LED_B = 17;
 const uint8_t LED_C = 18;
 const uint8_t LED_D = 19;
 const uint8_t BUZZER_PIN = 25;
+// On-board blue LED of most ESP32 DevKit / NodeMCU-32S boards. Needs no wiring, so it tells a
+// board/firmware fault apart from a breadboard wiring fault. Boards without it simply show nothing.
+const uint8_t STATUS_LED = 2;
 
 const uint8_t LED_PINS[] = {LED_A, LED_B, LED_C, LED_D};
 const char* SLOT_NAMES[] = {"A", "B", "C", "D"};
@@ -53,8 +60,52 @@ void printHelp() {
   Serial.println("A/B/C/D : simulate reminder for compartment");
   Serial.println("TEST    : test LEDs and buzzer");
   Serial.println("STOP    : turn all LEDs and buzzer off");
+  Serial.println("DIAG    : 12 s wiring check (on-board LED + all LEDs + long tone)");
+  Serial.println("PINS    : show which GPIO drives what");
   Serial.println("HELP    : show this message");
   Serial.println("==================================");
+}
+
+void activityBlink() {
+  // Short flash of the on-board LED: "command received".
+  digitalWrite(STATUS_LED, HIGH);
+  delay(40);
+  digitalWrite(STATUS_LED, LOW);
+}
+
+void printPins() {
+  Serial.println("PINS: A=GPIO16 B=GPIO17 C=GPIO18 D=GPIO19 BUZZER=GPIO25 STATUS_LED=GPIO2");
+}
+
+void runDiag() {
+  Serial.println("DIAG 1/3: on-board LED and all four LEDs ON for 4 s");
+  digitalWrite(STATUS_LED, HIGH);
+  for (size_t i = 0; i < SLOT_COUNT; i++) {
+    digitalWrite(LED_PINS[i], HIGH);
+  }
+  delay(4000);
+  allLedsOff();
+  digitalWrite(STATUS_LED, LOW);
+
+  Serial.println("DIAG 2/3: buzzer continuous tone for 2 s");
+  tone(BUZZER_PIN, 2000);
+  delay(2000);
+  noTone(BUZZER_PIN);
+
+  Serial.println("DIAG 3/3: each LED alone for 1 s, A to D (on-board LED on with each)");
+  for (size_t i = 0; i < SLOT_COUNT; i++) {
+    digitalWrite(LED_PINS[i], HIGH);
+    digitalWrite(STATUS_LED, HIGH);
+    Serial.print("  LED ");
+    Serial.print(SLOT_NAMES[i]);
+    Serial.print(" on GPIO");
+    Serial.println(LED_PINS[i]);
+    delay(1000);
+    digitalWrite(LED_PINS[i], LOW);
+    digitalWrite(STATUS_LED, LOW);
+    delay(200);
+  }
+  Serial.println("DIAG done");
 }
 
 void triggerReminder(size_t slotIndex) {
@@ -92,6 +143,7 @@ void runTest() {
 void handleCommand(String command) {
   command.trim();
   command.toUpperCase();
+  if (command.length() > 0) activityBlink();
 
   if (command == "A") triggerReminder(0);
   else if (command == "B") triggerReminder(1);
@@ -103,6 +155,8 @@ void handleCommand(String command) {
     noTone(BUZZER_PIN);
     Serial.println("Reminder cleared. All LEDs and buzzer OFF.");
   }
+  else if (command == "DIAG") runDiag();
+  else if (command == "PINS") printPins();
   else if (command == "HELP" || command.length() == 0) printHelp();
   else Serial.println("Unknown command. Type HELP.");
 }
@@ -117,6 +171,13 @@ void setup() {
   }
   pinMode(BUZZER_PIN, OUTPUT);
   noTone(BUZZER_PIN);
+  pinMode(STATUS_LED, OUTPUT);
+  for (int i = 0; i < 3; i++) {  // 3 blinks of the on-board LED: "booted"
+    digitalWrite(STATUS_LED, HIGH);
+    delay(120);
+    digitalWrite(STATUS_LED, LOW);
+    delay(120);
+  }
 
   Serial.println("MedVerify controller booted.");
   Serial.println("No servo or ultrasonic sensor is used in this version.");

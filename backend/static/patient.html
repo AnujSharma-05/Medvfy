@@ -45,9 +45,12 @@ function render(s) {
   let html = "";
   if (s.mode === "due") {
     const c = esc(s.compartment);
+    const n = Number(s.pills || 1);
+    const en = n === 1 ? "1 pill" : `${n} pills`;
+    const hi = n === 1 ? "1 गोली" : `${n} गोलियाँ`;
     html = `<div class="en">Time for your medicine</div><div class="hi">दवा लेने का समय</div>
       <div class="letter">${c}</div>
-      <div class="en">Take it from box ${c}</div><div class="hi">डिब्बे ${c} से दवा लीजिए</div>`;
+      <div class="en">Take ${en} from box ${c}</div><div class="hi">डिब्बे ${c} से ${hi} लीजिए</div>`;
     if (s.wrong) {
       const w = esc(s.wrong);
       html += `<div class="wrong">Not ${w}. Please use ${c}.<br>${w} नहीं, कृपया ${c} से लीजिए।</div>`;

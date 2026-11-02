@@ -39,6 +39,7 @@ class DoseSlot:
     label: str = ""
     enabled: bool = True
     days: list[int] = field(default_factory=lambda: list(ALL_DAYS))
+    pills_per_dose: int = 1   # Pills to take from the compartment at this time
     id: str = field(default_factory=lambda: f"dose-{uuid.uuid4().hex[:6]}")
 
     def occurrence_on(self, day: datetime) -> datetime:
@@ -62,12 +63,19 @@ def validate_slot(data: dict[str, Any], compartments: set[str]) -> DoseSlot:
     if not isinstance(days, list) or not all(isinstance(d, int) and 0 <= d <= 6 for d in days):
         raise ScheduleError("days must be a list of weekday numbers 0 (Mon) to 6 (Sun)")
     label = str(data.get("label", "")).strip()[:60]
+    try:
+        pills = int(data.get("pills_per_dose", 1))
+    except (TypeError, ValueError):
+        raise ScheduleError("pills_per_dose must be a whole number")
+    if not 1 <= pills <= 10:
+        raise ScheduleError("pills_per_dose must be between 1 and 10")
     slot = DoseSlot(
         time=time_str,
         compartment_id=compartment,
         label=label,
         enabled=bool(data.get("enabled", True)),
         days=sorted(set(days)),
+        pills_per_dose=pills,
     )
     if data.get("id"):
         slot.id = str(data["id"])[:40]

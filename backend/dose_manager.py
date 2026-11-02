@@ -72,6 +72,7 @@ class DoseConfig:
     remind_every_minutes: float = 5.0     # Re-alert interval while a dose is open
     camera_timeout_seconds: float = 30.0  # No heartbeat for this long = camera offline
     put_back_grace_minutes: float = 10.0  # A return this soon after removal is suspicious
+    low_stock_pills: int = 2              # "Refill soon" when a counted compartment gets this low
 
     @classmethod
     def from_settings(cls, settings: dict[str, Any]) -> "DoseConfig":
@@ -82,6 +83,7 @@ class DoseConfig:
             remind_every_minutes=float(cfg.get("remind_every_minutes", d.remind_every_minutes)),
             camera_timeout_seconds=float(cfg.get("camera_timeout_seconds", d.camera_timeout_seconds)),
             put_back_grace_minutes=float(cfg.get("put_back_grace_minutes", d.put_back_grace_minutes)),
+            low_stock_pills=int(cfg.get("low_stock_pills", d.low_stock_pills)),
         )
 
 
@@ -101,6 +103,9 @@ class DoseSession:
     last_reminder_at: str | None = None
     silenced_at: str | None = None   # Patient pressed "Stop sound": no more beeps, dose stays open
     closed_by: str | None = None     # "camera", "timeout", "caretaker", ...
+    dose_size: int = 1               # Pills to take from the compartment for this dose
+    start_count: int | None = None   # Camera's pill count when the dose opened (counted compartments)
+    removed_count: int = 0           # Pills the camera saw leave the compartment during the dose
     flags: list[str] = field(default_factory=list)
     events: list[dict[str, str]] = field(default_factory=list)
     id: str = field(default_factory=lambda: f"dose-{uuid.uuid4().hex[:10]}")
@@ -200,6 +205,7 @@ class DoseManager:
         label: str = "",
         schedule_id: str | None = None,
         scheduled_for: datetime | None = None,
+        dose_size: int = 1,
     ) -> DoseSession:
         with self._lock:
             now = self._now(now)
@@ -230,13 +236,16 @@ class DoseManager:
                 occurrence_key=occurrence_key,
                 reminders_sent=1,
                 last_reminder_at=now.isoformat(timespec="seconds"),
+                dose_size=max(1, int(dose_size)),
+                start_count=self.compartment_states.get(compartment, {}).get("count"),
             )
             session.log(now, "Reminder started" + (" (manual)" if not schedule_id else ""))
             self.sessions.append(session)
 
             name = f"{label} " if label else ""
+            pills = f"{session.dose_size} pill{'s' if session.dose_size > 1 else ''}"
             self._notify(session, f"Time for your {name}medicine",
-                         f"Please take the medicine from compartment {compartment} (light is on).",
+                         f"Please take {pills} from compartment {compartment} (light is on).",
                          INFO, "DOSE_DUE")
             self._device_remind(session, now)
 
@@ -252,7 +261,12 @@ class DoseManager:
                              f"Dose for compartment {compartment} is due, but the camera is in trial mode "
                              "and is not checking doses.", WARNING, "CAMERA_IN_TRIAL")
             state = self.compartment_states.get(compartment, {}).get("state")
-            if category(state) == "removed":
+            if session.start_count is not None and session.start_count < session.dose_size:
+                session.add_flag("NOT_LOADED")
+                self._notify(session, f"Compartment {compartment} does not have enough pills",
+                             f"The dose needs {session.dose_size}, the camera counts {session.start_count} in "
+                             f"compartment {compartment}. It needs refilling.", WARNING, "NOT_LOADED")
+            elif session.start_count is None and category(state) == "removed":
                 session.add_flag("NOT_LOADED")
                 self._notify(session, f"Compartment {compartment} looks empty",
                              f"The dose in compartment {compartment} is due, but the camera already sees it "
@@ -341,7 +355,8 @@ class DoseManager:
             now = self._now(now)
             for c in self.compartment_states:
                 self.compartment_states[c] = {"state": "EXPECTED_PRESENT",
-                                              "updated_at": now.isoformat(timespec="seconds"), "pending": None}
+                                              "updated_at": now.isoformat(timespec="seconds"), "pending": None,
+                                              "count": None, "loaded_count": None}
             self._notify(None, "Box recalibrated",
                          f"Requested by {by}: the camera saved the current box as 'loaded' for every compartment.",
                          INFO, "RECALIBRATED")
@@ -370,7 +385,8 @@ class DoseManager:
             for slot, at in self.schedule.due(now, window):
                 key = f"{slot.id}@{at.isoformat(timespec='minutes')}"
                 if key not in known:
-                    self.start_session(slot.compartment_id, now, slot.label, slot.id, at)
+                    self.start_session(slot.compartment_id, now, slot.label, slot.id, at,
+                                       dose_size=getattr(slot, "pills_per_dose", 1))
 
             for session in list(self.active_sessions()):
                 if now >= datetime.fromisoformat(session.deadline):
@@ -435,8 +451,13 @@ class DoseManager:
             self.camera["last_seen"] = now.isoformat(timespec="seconds")
             self.camera["monitoring"] = bool(payload.get("monitoring", False))
             self.camera["trial"] = bool(payload.get("trial", False))
+            self.camera["details"] = payload.get("details") or {}
             self.camera["camera_index"] = payload.get("camera_index")
             self.camera["online"] = True
+            loaded = payload.get("loaded_counts") or {}
+            for compartment, count in (payload.get("counts") or {}).items():
+                c = str(compartment).upper()
+                self.record_count(c, int(count), loaded.get(compartment), now, source="heartbeat")
             for compartment, state in (payload.get("states") or {}).items():
                 self.record_state(str(compartment).upper(), str(state), now, source="heartbeat")
             self._check_camera(now)
@@ -449,12 +470,18 @@ class DoseManager:
             if compartment not in self.compartment_states:
                 return
             entry = self.compartment_states[compartment]
+            if state == "UNKNOWN":
+                # The camera lost or reset its calibration: what we knew before is no longer evidence.
+                entry.update({"state": "UNKNOWN", "updated_at": now.isoformat(timespec="seconds"), "pending": None})
+                return
             if state not in CONFIRMED_STATES:
                 # Candidates and UNCERTAIN are shown but never acted on.
                 entry["pending"] = state
                 return
             previous = entry.get("state")
             entry.update({"state": state, "updated_at": now.isoformat(timespec="seconds"), "pending": None})
+            if entry.get("count") is not None:
+                return  # Counted compartment: pill counts drive the dose logic (record_count)
             before, after = category(previous), category(state)
             if before == after:
                 return
@@ -518,6 +545,116 @@ class DoseManager:
             self._notify(None, f"Compartment {compartment} {what} outside dose time",
                          f"Compartment {compartment} was {what} at {fmt_time(now)}, but no dose was due "
                          "from it.", WARNING, "UNSCHEDULED_REMOVAL", compartment=compartment)
+
+    def record_count(self, compartment: str, count: int, loaded_count: int | None = None,
+                     now: datetime | None = None, source: str = "observation") -> None:
+        """Apply a confirmed pill count from the camera. Acts only on a CHANGE of count, so a
+        repeated report (event + heartbeat) is harmless. The first report after start-up or
+        recalibration only sets the baseline."""
+        with self._lock:
+            now = self._now(now)
+            entry = self.compartment_states.get(compartment)
+            if entry is None:
+                return
+            if loaded_count:
+                entry["loaded_count"] = int(loaded_count)
+            previous = entry.get("count")
+            entry["count"] = int(count)
+            entry["count_updated_at"] = now.isoformat(timespec="seconds")
+            if previous is None or previous == count:
+                return
+            if count < previous:
+                self._pills_removed(compartment, previous - count, count, now, source)
+            else:
+                self._pills_added(compartment, count - previous, count, now)
+            self._check_stock(compartment, entry, now)
+            self._save()
+
+    def _pills_removed(self, compartment: str, n: int, left: int, now: datetime, source: str) -> None:
+        pills = f"{n} pill{'s' if n > 1 else ''}"
+        own = self._active_for(compartment)
+        if own is not None:
+            own.removed_count += n
+            own.log(now, f"Camera counted {pills} taken from {compartment} ({left} left, {source})")
+            if own.removed_count < own.dose_size:
+                own.add_flag("PARTIAL")
+                self._notify(own, f"Dose in progress: compartment {compartment}",
+                             f"{own.removed_count} of {own.dose_size} pills taken so far.", WARNING, "DOSE_PARTIAL")
+                return
+            if own.removed_count > own.dose_size:
+                own.add_flag(f"TOO_MANY:{own.removed_count}")
+                self._notify(own, f"Too many pills taken from compartment {compartment}",
+                             f"{own.removed_count} pills were taken, the dose is {own.dose_size}. Please check "
+                             "(the camera saw them removed; it cannot see them swallowed).", CRITICAL, "TOO_MANY")
+            else:
+                self._notify(own, f"Dose taken from compartment {compartment}",
+                             f"{pills.capitalize()} removed at {fmt_time(now)}; {left} left. (The camera saw "
+                             "them removed; it cannot see them being swallowed.)", INFO, "DOSE_REMOVED")
+            own.closed_by = "camera"
+            self.close_session(own, "REMOVED", now, f"{own.removed_count} pill(s) removed, dose {own.dose_size}")
+            return
+
+        others = [s for s in self.active_sessions() if s.compartment_id != compartment]
+        if others:
+            for s in others:
+                s.add_flag(f"WRONG_COMPARTMENT:{compartment}")
+                s.silenced_at = None
+                s.log(now, f"{pills} taken from {compartment} instead")
+            targets = ", ".join(sorted({s.compartment_id for s in others}))
+            self._notify(others[-1], f"Wrong compartment: {compartment}",
+                         f"{pills.capitalize()} taken from compartment {compartment}, but the medicine due now "
+                         f"is in compartment {targets}.", WARNING, "WRONG_COMPARTMENT", compartment=compartment)
+            self._refresh_device(now)
+            return
+
+        recent = self._recent_removed(compartment, now)
+        if recent is not None:
+            recent.add_flag(f"TOO_MANY:{recent.removed_count + n}")
+            recent.removed_count += n
+            self._notify(recent, f"Extra pills taken from compartment {compartment}",
+                         f"{pills.capitalize()} more taken right after the dose ({recent.removed_count} in total, "
+                         f"dose {recent.dose_size}).", CRITICAL, "TOO_MANY")
+            return
+        self._notify(None, f"Pills taken outside dose time: {compartment}",
+                     f"{pills.capitalize()} taken from compartment {compartment} at {fmt_time(now)}; no dose "
+                     f"was due from it. {left} left.", WARNING, "UNSCHEDULED_REMOVAL", compartment=compartment)
+
+    def _pills_added(self, compartment: str, n: int, now_count: int, now: datetime) -> None:
+        pills = f"{n} pill{'s' if n > 1 else ''}"
+        own = self._active_for(compartment)
+        if own is not None and own.removed_count > 0:
+            own.removed_count = max(0, own.removed_count - n)
+            own.add_flag("PUT_BACK")
+            own.log(now, f"{pills} put back")
+            self._notify(own, f"Pill put back in compartment {compartment}",
+                         f"{pills.capitalize()} went back into compartment {compartment} during the dose.",
+                         WARNING, "PUT_BACK")
+            return
+        recent = self._recent_removed(compartment, now)
+        if recent is not None:
+            recent.add_flag("PUT_BACK")
+            recent.log(now, f"{pills} put back after the dose")
+            minutes = int((now - datetime.fromisoformat(recent.closed_at)).total_seconds() // 60)
+            self._notify(recent, f"Medicine put back in compartment {compartment}?",
+                         f"{pills.capitalize()} went back into compartment {compartment} {minutes} minute(s) after "
+                         "it was taken. The dose may not have been taken.", WARNING, "PUT_BACK")
+            return
+        self._notify(None, f"Compartment {compartment} refilled",
+                     f"{pills.capitalize()} added; the camera now counts {now_count}.", INFO, "REFILLED",
+                     compartment=compartment)
+
+    def _check_stock(self, compartment: str, entry: dict[str, Any], now: datetime) -> None:
+        count = entry.get("count")
+        if count is None:
+            return
+        if count <= self.config.low_stock_pills:
+            if not entry.get("low_alerted"):
+                entry["low_alerted"] = True
+                what = "is empty" if count == 0 else f"has {count} pill{'s' if count != 1 else ''} left"
+                self._notify(None, f"Refill soon: compartment {compartment}",
+                             f"Compartment {compartment} {what}.", WARNING, "LOW_STOCK", compartment=compartment)
+        else:
+            entry["low_alerted"] = False
 
     def _recent_removed(self, compartment: str, now: datetime) -> DoseSession | None:
         grace = timedelta(minutes=self.config.put_back_grace_minutes)

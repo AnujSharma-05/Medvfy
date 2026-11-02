@@ -133,23 +133,46 @@ class TestScheduleStore(unittest.TestCase):
 
 
 class FakeSerial:
+    """Behaves like MedVerify_Controller.ino on the wire (replies copied from the sketch)."""
+
     def __init__(self, port, baud):
         self.port, self.baud = port, baud
         self.written: list[bytes] = []
         self.is_open = True
         self.fail_next = False
+        self.silent = False
+        self.lines = [b"leftover boot text\r\n"]  # stale output a reader must not mistake for a reply
+
+    def reset_input_buffer(self):
+        self.lines.clear()
 
     def write(self, data):
         if self.fail_next:
             self.fail_next = False
             raise OSError("device unplugged")
         self.written.append(data)
+        if self.silent:
+            return
+        cmd = data.decode().strip()
+        if cmd in ("A", "B", "C", "D"):
+            self.lines += [f"REMINDER: compartment {cmd} selected; LED ON, buzzer sounding.\r\n".encode(),
+                           b"LED remains on until STOP or another compartment is selected.\r\n"]
+        elif cmd == "STOP":
+            self.lines += [b"Reminder cleared. All LEDs and buzzer OFF.\r\n"]
+        elif cmd == "HELP":
+            self.lines += [b"\r\n", b"=== MedVerify ESP32 controller ===\r\n", b"A/B/C/D : simulate reminder\r\n"]
+        elif cmd == "DIAG" and getattr(self, "has_diag", True):
+            self.lines += [b"DIAG 1/3: on-board LED and all four LEDs ON for 4 s\r\n",
+                           b"DIAG 2/3: buzzer continuous tone for 2 s\r\n", b"  LED A on GPIO16\r\n",
+                           b"DIAG done\r\n"]
+        elif cmd == "DIAG":
+            self.lines += [b"Unknown command. Type HELP.\r\n"]  # firmware from before DIAG existed
 
     def flush(self):
         pass
 
     def readline(self):
-        return b"REMINDER: ok\r\n"
+        return self.lines.pop(0) if self.lines else b""  # b"" = read timeout
 
     def close(self):
         self.is_open = False
@@ -163,7 +186,76 @@ class TestDeviceAdapters(unittest.TestCase):
         dev.stop_alert()
         self.assertEqual(conns[0].written, [b"B\n", b"STOP\n"])
         self.assertEqual(dev.get_state()["active_compartment"], None)
-        self.assertEqual(dev.last_response, "REMINDER: ok")
+        self.assertEqual(dev.last_response, "Reminder cleared. All LEDs and buzzer OFF.")
+
+    def test_silent_board_is_an_error_not_a_delivered_reminder(self):
+        conns = []
+        dev = ESP32SerialDevice("COM9", serial_factory=lambda p, b: conns.append(FakeSerial(p, b)) or conns[-1])
+        dev.REPLY_TIMEOUT_S = 0.05
+        self.assertTrue(dev.check()["ok"])
+        conns[0].silent = True
+        from backend.device_adapter import DeviceNotResponding
+        with self.assertRaises(DeviceNotResponding):
+            dev.trigger_reminder("A", "e")
+        self.assertIn("No reply from the pill box on COM9", dev.get_state()["last_error"])
+        self.assertFalse(dev.check()["ok"] and conns[-1].silent)
+
+    def test_diagnose_returns_the_board_report(self):
+        conns = []
+        dev = ESP32SerialDevice("COM9", serial_factory=lambda p, b: conns.append(FakeSerial(p, b)) or conns[-1])
+        report = dev.diagnose(timeout=1.0)
+        self.assertEqual(report[0], "DIAG 1/3: on-board LED and all four LEDs ON for 4 s")
+        self.assertEqual(report[-1], "DIAG done")
+
+        old = []
+        dev = ESP32SerialDevice("COM9", serial_factory=lambda p, b: old.append(FakeSerial(p, b)) or old[-1])
+        dev.check()
+        old[0].has_diag = False
+        from backend.device_adapter import DeviceNotResponding
+        with self.assertRaises(DeviceNotResponding) as ctx:
+            dev.diagnose(timeout=0.2)
+        self.assertIn("updated firmware", str(ctx.exception))
+
+    def test_fresh_connection_gets_one_resend_while_the_board_boots(self):
+        class BootingSerial(FakeSerial):
+            def __init__(self, p, b):
+                super().__init__(p, b)
+                self.writes_before_ready = 1
+
+            def write(self, data):
+                if self.writes_before_ready:  # first command lost: board still booting
+                    self.writes_before_ready -= 1
+                    self.written.append(data)
+                    return
+                super().write(data)
+
+        conns = []
+        dev = ESP32SerialDevice("COM9", serial_factory=lambda p, b: conns.append(BootingSerial(p, b)) or conns[-1])
+        dev.REPLY_TIMEOUT_S, dev.BOOT_WAIT_S = 0.05, 0.01
+        self.assertTrue(dev.check()["ok"])
+        self.assertEqual(conns[0].written, [b"HELP\n", b"HELP\n"])
+        # An established connection does not resend: silence there is a real fault
+        conns[0].silent = True
+        from backend.device_adapter import DeviceNotResponding
+        with self.assertRaises(DeviceNotResponding):
+            dev.trigger_reminder("A", "e")
+        self.assertEqual(conns[0].written[-1:], [b"A\n"])
+        self.assertEqual(conns[0].written.count(b"A\n"), 1)
+
+    def test_auto_port_finds_the_esp32_bridge(self):
+        from backend import device_adapter as da
+        ports = [MagicMock(device="COM3", vid=0x8087), MagicMock(device="COM28", vid=0x10C4)]
+        with patch("serial.tools.list_ports.comports", return_value=ports):
+            self.assertEqual(da.find_esp32_ports(), ["COM28"])
+            dev = ESP32SerialDevice("auto", serial_factory=lambda p, b: FakeSerial(p, b))
+            self.assertIsNone(dev.port)
+            dev.trigger_reminder("C", "e")
+            self.assertEqual(dev.get_state()["port"], "COM28")
+        with patch("serial.tools.list_ports.comports", return_value=[]):
+            dev = ESP32SerialDevice("auto", serial_factory=lambda p, b: FakeSerial(p, b))
+            result = dev.check()
+            self.assertFalse(result["ok"])
+            self.assertIn("No ESP32 USB port found", result["error"])
 
     def test_serial_reconnects_after_error(self):
         conns = []
