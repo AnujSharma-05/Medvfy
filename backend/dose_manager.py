@@ -75,6 +75,7 @@ class DoseConfig:
     low_stock_pills: int = 2              # "Refill soon" when a counted compartment gets this low
     multi_window_seconds: float = 20.0    # Takes from 2+ compartments this close = "one at a time"
     patient_alert_seconds: float = 90.0   # How long an alert stays on the patient screen
+    moved_after_seconds: float = 10.0     # All compartments blocked this long = camera/sheet moved
 
     @classmethod
     def from_settings(cls, settings: dict[str, Any]) -> "DoseConfig":
@@ -155,7 +156,8 @@ class DoseManager:
         self._camera_alerted_offline = False
         # What the patient screen must say now (too many pills, wrong box, one at a time).
         self.patient_alert: dict[str, Any] | None = None
-        self._recent_takes: dict[str, datetime] = {}  # compartment -> last time medicine was taken
+        self._recent_takes: dict[str, datetime] = {}
+        self._all_blocked_since: datetime | None = None  # compartment -> last time medicine was taken
         self._load_sessions()
 
     # ------------------------------------------------------------------ helpers
@@ -513,6 +515,29 @@ class DoseManager:
             for compartment, state in (payload.get("states") or {}).items():
                 self.record_state(str(compartment).upper(), str(state), now, source="heartbeat")
             self._check_camera(now)
+            self._check_view(now)
+
+    def _check_view(self, now: datetime) -> None:
+        """Every compartment 'view blocked' for a while is not a hand: the camera or the sheet
+        moved after calibration, and no dose can be verified until the set-up is redone.
+        (Live demo, 2 Nov: this froze every dose silently.)"""
+        blocked = set((self.camera.get("details") or {}).get("view_blocked") or [])
+        if not self.camera.get("monitoring") or blocked != set(self.compartments):
+            self._all_blocked_since = None
+            self.camera["moved"] = False
+            return
+        if self._all_blocked_since is None:
+            self._all_blocked_since = now
+        if now - self._all_blocked_since < timedelta(seconds=self.config.moved_after_seconds):
+            return
+        if not self.camera.get("moved"):
+            self.camera["moved"] = True
+            self._notify(None, "Camera or sheet moved: doses cannot be checked",
+                         "Every compartment looks blocked. Fix the camera and sheet in place, then redo the "
+                         "set-up: mv cam regions auto, mv cam empty (sheet empty), mv cam loaded A=.. B=..",
+                         CRITICAL, "CAMERA_MOVED")
+            self._alert_patient("CAMERA_MOVED", "The camera cannot see the boxes. Please call your caretaker.",
+                                "कैमरा डिब्बे नहीं देख पा रहा है। कृपया देखभाल करने वाले को बुलाइए।", now)
 
     def record_state(self, compartment: str, state: str, now: datetime | None = None,
                      source: str = "observation") -> None:

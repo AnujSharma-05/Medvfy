@@ -88,5 +88,5 @@ Cause: the camera or sheet moved after calibration (while wiring the hardware). 
 recalibrate refused for A, B, C, D at once ("lies across the drawn line") and no count reports
 afterwards: every box reads "view blocked", counts freeze, doses never close. Not a hardware
 bug. Fix: fix camera + tape sheet, then redo set-up (regions auto -> empty -> loaded).
-Improvement still to make: when ALL boxes are blocked for > 10 s, show "camera or sheet moved:
-redo set-up" on the console/patient screen instead of silently freezing.
+DONE (commit after 7bb10e7): ALL boxes blocked for > 10 s now raises a critical CAMERA_MOVED alert
+(caretaker + patient screen) instead of silently freezing. Reports: docs/report/ (build_report.js).

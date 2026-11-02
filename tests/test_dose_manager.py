@@ -455,6 +455,28 @@ class TestPatientAlerts(TestCountedDoses):
         self.assertEqual(self.alert()["kind"], "TOO_MANY")
 
 
+class TestCameraMoved(DoseTestBase):
+    def blocked(self, slots):
+        self.dm.heartbeat({"monitoring": True, "states": {}, "details": {"view_blocked": slots}}, self.now)
+
+    def test_all_boxes_blocked_for_a_while_means_the_camera_moved(self):
+        self.blocked(SLOTS)
+        self.advance(seconds=5, tick=False)
+        self.blocked(SLOTS)
+        self.assertNotIn("CAMERA_MOVED", self.kinds())
+        self.advance(seconds=6, tick=False)
+        self.blocked(SLOTS)
+        self.blocked(SLOTS)
+        self.assertEqual(self.kinds().count("CAMERA_MOVED"), 1)
+        self.assertEqual(self.dm.current_patient_alert(self.now)["kind"], "CAMERA_MOVED")
+
+    def test_one_hand_on_one_box_is_not_a_move(self):
+        self.blocked(["A"])
+        self.advance(seconds=30, tick=False)
+        self.blocked(["A"])
+        self.assertNotIn("CAMERA_MOVED", self.kinds())
+
+
 class TestScheduleEdgeCases(DoseTestBase):
     def test_overlapping_dose_for_same_compartment_is_skipped(self):
         self.schedule.add({"time": "08:00", "compartment_id": "A"})
