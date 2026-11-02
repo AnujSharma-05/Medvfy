@@ -114,3 +114,7 @@ DONE (commit after 7bb10e7): ALL boxes blocked for > 10 s now raises a critical 
 - 23:55 live check (simulated box, real camera): correct dose A closed in ~3 s; dose B take-2 ->
   TOO_MANY critical + red Stop screen; pieces taken from C during a B dose -> WRONG_COMPARTMENT screen.
   config/tuning.json had been invalid JSON (silently ignored) until c2a92d3: tuning is now really live.
+
+## 3 Nov: frozen for the demo
+Tag `demo-working-2026-11-02` = working state. New README (story, flow maps, structure; no files
+moved), old README kept as docs/TECHNICAL_REFERENCE.md, viva guide docs/VIVA_PREP.md.

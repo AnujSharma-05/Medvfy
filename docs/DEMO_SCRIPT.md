@@ -1,5 +1,7 @@
 # MedVerify: demonstration script (about 7 minutes)
 
+> Full spoken script and short answers to likely questions: [VIVA_PREP.md](VIVA_PREP.md).
+
 Two presenters: **P1** speaks and explains; **P2** handles the pill box and types commands in the
 `live_demo.bat` window. Keep hands out of the camera view except when "taking" a pill.
 

@@ -1,5 +1,7 @@
 # MedVerify: questions an evaluator may ask
 
+> Short, recitable answers (including general IoT questions): [VIVA_PREP.md](VIVA_PREP.md).
+
 ## Concept
 **1. What problem does it solve?**
 Elderly patients miss doses, double-dose, or take the wrong medicine. MedVerify reminds the
