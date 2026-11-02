@@ -69,6 +69,13 @@ class TestDrawnRegions(unittest.TestCase):
         cells = find_drawn_cells(drawn_sheet(empty_cell="all"))
         self.assertEqual([c.contents for c in cells], ["empty"] * 4)
 
+    def test_small_grid_far_from_camera_keeps_rows_apart(self):
+        """Regression (live): rows 94 px apart in a 480 px picture were merged into one row,
+        so the bottom-right square became C."""
+        from vision.auto_regions import reading_order
+        boxes = [[133, 123, 151, 116], [261, 119, 132, 112], [268, 209, 137, 120], [134, 216, 156, 124]]
+        self.assertEqual(reading_order(boxes, 480), [boxes[0], boxes[1], boxes[3], boxes[2]])
+
     def test_assign_picks_squares_by_number(self):
         cells = find_drawn_cells(drawn_sheet())
         rois = find_drawn_regions(drawn_sheet(), SLOTS, assign={"A": 4, "B": 3, "C": 2, "D": 1})

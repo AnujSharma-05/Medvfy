@@ -69,11 +69,17 @@ def color_name(frame: np.ndarray, mask: np.ndarray) -> str:
 
 
 def reading_order(boxes: list[list[int]], frame_height: int) -> list[list[int]]:
-    """Top row first (a new row when centres differ by over 20% of the height), left to right."""
+    """Top row first, left to right. A new row starts when a centre is lower than the row's
+    by over half a box height (or 20% of the picture, whichever is smaller): a small grid far
+    from the camera has rows closer together than 20% of the picture (measured: 94 px of 480)."""
+    if not boxes:
+        return []
+    heights = sorted(b[3] for b in boxes)
+    gap = min(frame_height * 0.2, 0.5 * heights[len(heights) // 2])
     rows: list[list[list[int]]] = []
     for b in sorted(boxes, key=lambda b: b[1] + b[3] / 2):
         cy = b[1] + b[3] / 2
-        if rows and abs(cy - (rows[-1][0][1] + rows[-1][0][3] / 2)) < frame_height * 0.2:
+        if rows and abs(cy - (rows[-1][0][1] + rows[-1][0][3] / 2)) < gap:
             rows[-1].append(b)
         else:
             rows.append([b])
