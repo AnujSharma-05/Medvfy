@@ -100,3 +100,4 @@ DONE (commit after 7bb10e7): ALL boxes blocked for > 10 s now raises a critical 
 - Found at 23:25: the calibration from 17:53 no longer matched (camera/sheet moved; all boxes
   "view blocked"). Squares are found fine in the new position; set-up must be redone by the user.
 - Demo script: docs/DEMO_SCRIPT.md. Evaluator questions: docs/EVALUATOR_QA.md.
+- 23:45: set-up redone (regions auto, empty, loaded A=4 B=4 C=4 D=3); estimates 4.09/4.05/4.06/2.98, no box blocked.
