@@ -82,3 +82,11 @@ Remaining:
 - Full hardware run: `.\mv demo` with the real box (each scenario: normal dose, too many,
   wrong box, two boxes at once), watching the 3 apps.
 - Merge PR #3 after that run.
+
+## Diagnosed 2 Nov 17:55: "LED stays on, screen does not update" in the live demo
+Cause: the camera or sheet moved after calibration (while wiring the hardware). camera.log:
+recalibrate refused for A, B, C, D at once ("lies across the drawn line") and no count reports
+afterwards: every box reads "view blocked", counts freeze, doses never close. Not a hardware
+bug. Fix: fix camera + tape sheet, then redo set-up (regions auto -> empty -> loaded).
+Improvement still to make: when ALL boxes are blocked for > 10 s, show "camera or sheet moved:
+redo set-up" on the console/patient screen instead of silently freezing.
