@@ -53,6 +53,31 @@ scattered pieces, hand guard, sheet-slide follow, patient alerts + buzzer patter
 flashed and tested (LEDs A-D, alarm, warn all confirmed working), live calibration on the real
 setup (A 4, B 4, C 4, D 3).
 
+Live demo launcher: `live_demo.bat` (real box; `live_demo.bat mock` for simulated). Starts
+everything, opens the 3 apps, leaves a command window with the demo controls. No scripted tests.
+
+### Demo flow for the judges (about 5 minutes)
+1. Show the 3 apps and `mv status` (counts per box match the sheet).
+2. Normal dose: `mv dose start A pills=1` -> LED A + beeps, patient screen "box A". Take 1 piece
+   from A, hand away -> after ~3 s screen shows "Done", caretaker app logs it, LED off.
+3. Too many: `mv dose start B pills=1`, take 2 from B -> siren + red "Stop" + critical alert.
+4. Wrong box: `mv dose start C pills=1`, take from D -> "Wrong box, take from C", LED C beeps.
+   Then take from C -> dose accepted.
+5. One at a time: take from two boxes together -> "one medicine at a time" + two beeps.
+6. Hand resting on a box -> no false removal (view blocked).
+Put pieces back between steps and run `mv cam loaded ...` with the real counts if needed.
+
+### Last guided run (`mv demo`, real box, 2 Nov 17:24): 5/8 passed
+FAILED: S3 (take 1 from A), S5 (wrong compartment then right one), S6 (take 2 instead of 1).
+Passed: S1 box, S2 no false alarms, S4 put back, S7 rearranging, S8 hand resting.
+The three failures are all "counted removal during a dose". Details: `data/demo/20261102-172418.json`.
+FIRST THING TO DO in a new chat: read that JSON (what count/state the camera reported vs
+expected). Likely causes to check, in order: (a) the demo's timeout is shorter than count
+confirmation (2 observations + 2 s after the scene is still, plus 1 s settle); (b) small grid
+far from camera -> one piece ~600-850 px, crumpled pieces change area, estimate not near a
+whole number so `CountTracker` never confirms (see `mv status` "camera estimates" while
+taking a piece); (c) hands not out of view long enough. Fix, add a test, run `mv test`.
+
 Remaining:
 - Full hardware run: `.\mv demo` with the real box (each scenario: normal dose, too many,
   wrong box, two boxes at once), watching the 3 apps.
